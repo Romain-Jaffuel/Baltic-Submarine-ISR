@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "features": [
+    "cls",
+    "confidence",
+    "priority_hint"
+  ],
+  "threshold": 0.07969329422276888,
+  "metrics": {
+    "AP": 1.0,
+    "ROC_AUC": 1.0,
+    "F1_at_thr": 0.8888888888888888
+  },
+  "best_params": {
+    "clf__C": 0.5,
+    "clf__penalty": "l1"
+  },
+  "train_size": 4327,
+  "val_size": 1442,
+  "positive_ratio_train": 0.05592789461520684,
+  "positive_ratio_val": 0.24410540915395285,
+  "notes": "Group split by track_id; balanced class weights."
+}

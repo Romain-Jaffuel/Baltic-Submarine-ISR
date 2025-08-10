@@ -1,0 +1,4 @@
+venv312/
+data/
+old/
+*.pyc

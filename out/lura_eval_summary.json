@@ -1,0 +1,45 @@
+{
+  "tracks_total": 162,
+  "tracks_seen": 147,
+  "recall_tracks": 0.9074074074074074,
+  "point_recall": 0.15024614881233467,
+  "by_class": [
+    {
+      "cls": "merchant_cargo",
+      "tracks_total": 91,
+      "tracks_seen": 80,
+      "recall_tracks": 0.8791208791208791
+    },
+    {
+      "cls": "merchant_tanker",
+      "tracks_total": 28,
+      "tracks_seen": 28,
+      "recall_tracks": 1.0
+    },
+    {
+      "cls": "military_vessel",
+      "tracks_total": 5,
+      "tracks_seen": 4,
+      "recall_tracks": 0.8
+    },
+    {
+      "cls": "small_boat",
+      "tracks_total": 19,
+      "tracks_seen": 18,
+      "recall_tracks": 0.9473684210526315
+    },
+    {
+      "cls": "unknown",
+      "tracks_total": 9,
+      "tracks_seen": 8,
+      "recall_tracks": 0.8888888888888888
+    },
+    {
+      "cls": "usv",
+      "tracks_total": 10,
+      "tracks_seen": 9,
+      "recall_tracks": 0.9
+    }
+  ],
+  "cells_miss_sum": 1189454.0
+}
