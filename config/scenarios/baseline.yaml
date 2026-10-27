@@ -1,0 +1,2 @@
+# Reference scenario. Every other scenario is a delta against this one.
+scenario: baseline

@@ -1,0 +1,38 @@
+# The deviating vessel runs quiet. Source level down 12 dB across the traffic,
+# which is the pessimistic reading of a shadow-fleet tanker at low revolutions.
+scenario: quiet
+
+traffic:
+  classes:
+    - name: cargo
+      share: 0.45
+      speed_mean_ms: 6.2
+      speed_sigma_ms: 0.9
+      source_level_db: 133.0
+      rail: east_west
+      predictable: true
+      growth_m_per_s: 7.1
+    - name: ferry
+      share: 0.10
+      speed_mean_ms: 10.8
+      speed_sigma_ms: 0.8
+      source_level_db: 135.0
+      rail: helsinki_tallinn
+      predictable: true
+      growth_m_per_s: 8.71
+    - name: fishing
+      share: 0.25
+      speed_mean_ms: 3.1
+      speed_sigma_ms: 1.0
+      source_level_db: 124.0
+      rail: null
+      predictable: false
+      growth_m_per_s: 0.152
+    - name: small
+      share: 0.20
+      speed_mean_ms: 5.1
+      speed_sigma_ms: 2.0
+      source_level_db: 116.0
+      rail: null
+      predictable: false
+      growth_m_per_s: 0.252

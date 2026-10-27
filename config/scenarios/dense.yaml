@@ -1,0 +1,9 @@
+# Two and a half times the traffic. More targets, but also a higher noise
+# floor and a shorter modem range: density cuts both ways.
+scenario: dense
+
+traffic:
+  n_vessels: 450
+
+environment:
+  ambient_noise_db: 63.0

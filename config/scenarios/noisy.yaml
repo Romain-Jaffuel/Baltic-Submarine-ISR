@@ -1,0 +1,7 @@
+# Sea state 5. The ambient floor rises 10 dB, which shortens detection AND
+# modem range at once. This is the scenario that stresses coordination, and it
+# replaces the GNSS-denial scenario of specification v1.
+scenario: noisy
+
+environment:
+  ambient_noise_db: 68.0

@@ -1,0 +1,86 @@
+# The reference vehicle, its acoustics and its links.
+#
+# Every number here has an entry in docs/constants.md giving its source or
+# stating plainly that it is postulated. Do not add one without.
+
+schema_version: 1
+
+auv:
+  length_m: 3.5
+  diameter_m: 0.32
+  mass_kg: 250.0
+  # 5.2 kWh usable. REMUS 600 battery capacity.
+  battery_j: 1.872e7
+  # Navigation, CPU, passive array, edge classifier. Runs whatever the regime.
+  hotel_power_w: 15.0
+  # P = hotel + k v^3. Calibrated on the published 24 h at 3 kt, not derived
+  # from drag: see docs/constants.md C-2-03.
+  propulsion_coefficient: 55.0
+  max_speed_ms: 2.5
+  operating_depth_m: 60.0
+  vertical_speed_ms: 0.30
+  energy_reserve_fraction: 0.15
+  recharge_s: 21600.0
+  handling_s: 1800.0
+  regimes:
+    drift_ms: 0.0
+    cruise_ms: 1.2
+    sprint_ms: 2.5
+
+acoustics:
+  # The band is chosen by the array, not the target. A 2 m aperture has no
+  # directivity below a kilohertz, and merchant noise still has plenty of
+  # energy at two. See docs/constants.md C-5-01.
+  band_centre_hz: 1800.0
+  band_width_hz: 2000.0
+  sound_speed_ms: 1450.0
+  array_aperture_m: 2.0
+  # Longer integration buys sensitivity and smears a moving target. Ten seconds
+  # is 60 m of target travel at 6 m/s.
+  integration_s: 10.0
+  detection_index: 15.0
+  # Where flow noise equals ambient. This single number carries the whole
+  # speed-versus-hearing coupling; it is the most load-bearing assumption in
+  # the model. See docs/constants.md C-5-04.
+  flow_noise_crossover_ms: 1.30
+  flow_noise_slope: 55.0
+  # Flow noise is a LOW-frequency phenomenon. It falls away steeply with
+  # frequency, which is exactly why the modem works at 25 kHz and is not
+  # deafened by the vehicle carrying it. See docs/constants.md C-5-05.
+  flow_noise_rolloff_db_per_decade: 30.0
+  # Thruster cavitation. Broadband, so it rolls off far more gently than flow
+  # noise and does reach the modem band.
+  machinery_onset_ms: 2.0
+  machinery_penalty_db: 6.0
+  machinery_rolloff_db_per_decade: 10.0
+  # Beamforming works poorly against a boundary layer correlated across the
+  # array, so flow noise gets half the gain ambient does.
+  self_noise_array_gain_db: 3.5
+  # What a detection is worth once you have it. A passive array bears well and
+  # ranges badly: 2 deg of bearing is 175 m at 5 km, but 25 % of range is
+  # 1250 m. Position error is dominated by range, and it is the same order as
+  # the 3 km staleness gate -- which is the whole difficulty. See C-5-14.
+  max_probability: 0.95
+  bearing_sigma_deg: 2.0
+  range_error_fraction: 0.25
+  # A false contact every ten minutes per vehicle.
+  false_alarm_rate_hz: 0.0017
+  # Chance a coarse class comes out wrong. Feeds the plausibility model, and is
+  # therefore a source of false alarms in its own right.
+  class_confusion: 0.15
+
+comms:
+  frequency_hz: 25000.0
+  # Multipath, not level, sets this. The level budget alone would allow 12 km;
+  # delay spread in a 50 m waveguide does not. See docs/constants.md C-6-02.
+  range_m: 4000.0
+  bitrate_bps: 1000.0
+  slot_s: 2.0
+  protocol_latency_s: 1.0
+  source_level_db: 180.0
+  required_snr_db: 10.0
+  # Motion compresses the acoustic time scale by v/c and breaks long packets.
+  # THIS is what speed costs the link, not self-noise. See C-6-03.
+  doppler_tolerance_ms: 1.50
+  surface_dwell_s: 60.0
+  surface_energy_j: 30000.0

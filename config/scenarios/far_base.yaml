@@ -1,0 +1,11 @@
+# Bases pushed to 80 km. Transit eats the endurance, and the sprint stops being
+# able to reach the area at all.
+scenario: far_base
+
+bases:
+  - name: hanko
+    lon: 23.00
+    lat: 59.82
+  - name: kunda
+    lon: 26.55
+    lat: 59.52
