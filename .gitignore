@@ -1,4 +1,33 @@
-venv312/
-data/
-old/
-*.pyc
+# The raw download the seabed product is built FROM. Fifteen megabytes of
+# GeoTIFF that only scripts/ingest_geodata.py ever opens, and only when
+# rebuilding. What is versioned is data/gulf_of_finland.npz, which is what
+# the simulation and the chart actually read.
+data/emodnet_raw.tif
+
+# Render output
+out/*
+!out/.gitkeep
+
+# Training checkpoints and run manifests
+runs/
+*.pt
+
+# The working tree of the previous project, kept out of version control
+_archive/
+
+# Environment
+.venv/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Working notes
+docs/
