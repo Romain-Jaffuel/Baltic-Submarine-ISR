@@ -217,6 +217,20 @@ def test_shore_normal_points_out_to_sea(statics: Statics) -> None:
     assert float((inside > 0.9).float().mean()) > 0.85
 
 
+def _disagreement(statics: Statics, points: torch.Tensor, stray: torch.Tensor) -> str:
+    """Describe points the bathymetry calls deep and the distance field calls land."""
+    where = points[stray]
+    depth = field.depth_m(statics, where)
+    gap = field.distance_to_coast(statics, where)
+    worst = int(gap.argmin())
+    return (
+        f"{int(stray.sum())} of {int(stray.numel())} points clear the depth without "
+        f"being at sea. Worst at x={float(where[worst, 0]):.1f} y={float(where[worst, 1]):.1f}, "
+        f"depth {float(depth[worst]):.2f} m, distance to coast {float(gap[worst]):.3f} m. "
+        f"Distances run {float(gap.min()):.3f} to {float(gap.max()):.3f} m."
+    )
+
+
 def test_has_clearance_asks_the_seabed_rather_than_the_shore(statics: Statics) -> None:
     """The configuration states the limit as a DEPTH, so the test is about depth.
 
@@ -229,10 +243,16 @@ def test_has_clearance_asks_the_seabed_rather_than_the_shore(statics: Statics) -
     assert bool(deep_enough.any()) and not bool(deep_enough.all())
     assert torch.equal(deep_enough, field.depth_m(statics, points) >= 15.0)
 
-    # Everything that clears fifteen metres is at sea; the converse is false,
-    # and that asymmetry is the whole reason the function exists.
-    assert bool(field.is_sea(statics, points)[deep_enough].all())
-    assert int(field.is_sea(statics, points).sum()) > int(deep_enough.sum())
+    # Everything that clears fifteen metres is at sea, and the converse is
+    # false. That asymmetry is the whole reason the function exists.
+    #
+    # The two sides come from different rasters, the bathymetry and the signed
+    # distance field, so a bare `.all()` here fails with nothing to go on when
+    # they disagree. It says which points and by how much.
+    at_sea = field.is_sea(statics, points)
+    stray = deep_enough & ~at_sea
+    assert not bool(stray.any()), _disagreement(statics, points, stray)
+    assert int(at_sea.sum()) > int(deep_enough.sum())
 
 
 def test_pushing_offshore_leaves_open_water_alone(statics: Statics) -> None:
