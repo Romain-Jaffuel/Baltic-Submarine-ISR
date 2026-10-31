@@ -39,6 +39,18 @@ class Seabed:
         qualifies. ``escape_sea`` uses the keel limit and ``escape_berth``
         the berthing clearance; which thresholds they were built for is in
         the metadata, and world.statics checks them.
+    home_distance_m : ndarray
+        Geodesic distance to each berth over navigable water, in metres,
+        ``(bases, rows, columns)`` on a grid of ``home_cell_m``. Infinite
+        where no route exists. This is what the recall margin is sized on:
+        the straight line is not available in an archipelago.
+    home_route : ndarray
+        The unit direction that walks ``home_distance_m`` downhill, east then
+        north, ``(bases, rows, columns, 2)``. Zero at the berth itself and
+        where there is no route. This is the course a returning vehicle
+        steers, in place of the bearing to its base.
+    home_cell_m : float
+        Cell size of the two home fields, a whole multiple of ``cell_m``.
     coast : tuple of ndarray
         The waterline as polylines in local metres, for drawing. Taken from
         the zero crossing of the terrain, so it is finer than the grid.
@@ -54,6 +66,9 @@ class Seabed:
     coast_distance_m: np.ndarray
     escape_sea: np.ndarray
     escape_berth: np.ndarray
+    home_distance_m: np.ndarray
+    home_route: np.ndarray
+    home_cell_m: float
     coast: tuple[np.ndarray, ...]
     cell_m: float
     origin: np.ndarray
@@ -113,6 +128,12 @@ def load(path: Path = PRODUCT) -> Seabed:
         distance = archive["coast_distance_m"].astype(np.float32)
         escape_sea = archive["escape_sea"].astype(np.int64)
         escape_berth = archive["escape_berth"].astype(np.int64)
+        unreachable = float(metadata["home_unreachable"])
+        home_dam = archive["home_distance_dam"].astype(np.float32)
+        home_distance = np.where(
+            home_dam >= unreachable, np.inf, home_dam * float(metadata["home_quantum_m"])
+        )
+        home_route = archive["home_route_i8"].astype(np.float32) / 127.0
         vertices = archive["coast_vertices"]
         offsets = archive["coast_offsets"]
     coast = tuple(
@@ -123,6 +144,9 @@ def load(path: Path = PRODUCT) -> Seabed:
         coast_distance_m=distance,
         escape_sea=escape_sea,
         escape_berth=escape_berth,
+        home_distance_m=home_distance,
+        home_route=home_route,
+        home_cell_m=float(metadata["cell_m"]) * float(metadata["home_stride"]),
         coast=coast,
         cell_m=float(metadata["cell_m"]),
         origin=np.array([metadata["origin_x_m"], metadata["origin_y_m"]], dtype=np.float64),

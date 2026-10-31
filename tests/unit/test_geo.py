@@ -87,14 +87,18 @@ def test_distance_to_base_picks_the_nearest(geometry: geo.Geometry) -> None:
 def test_base_to_area_centre(resolved: Config, geometry: geo.Geometry) -> None:
     """C-3-04. The whole transit budget hangs on this number.
 
-    39.9 km until the Helsinki mooring moved 2.9 km offshore to get out of the
-    land; the transit is correspondingly shorter now. See C-3-16.
+    It has moved twice. 39.9 km originally; then the Helsinki mooring went
+    2.9 km offshore to get out of the land; and now 33.4 km, because the fleet
+    moors off Isosaari and Naissaar rather than in the two ports. Forward
+    mooring buys exactly this: six and a half kilometres less transit at each
+    end of every sortie, which is an hour and a half of cruise and a twentieth
+    of a battery. See C-3-16.
     """
     centre = geometry.frame.to_xy(
         0.5 * (resolved.geo.lon_min + resolved.geo.lon_max),
         0.5 * (resolved.geo.lat_min + resolved.geo.lat_max),
     ).reshape(1, 2)
-    assert geometry.distance_to_base(centre)[0] == pytest.approx(39_000, rel=0.02)
+    assert geometry.distance_to_base(centre)[0] == pytest.approx(33_400, rel=0.02)
 
 
 def test_unknown_rail_raises(geometry: geo.Geometry) -> None:

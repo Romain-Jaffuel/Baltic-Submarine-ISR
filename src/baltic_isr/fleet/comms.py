@@ -40,7 +40,11 @@ from baltic_isr.world.statics import Statics
 HEADER_BITS = 32
 POSITION_BITS = 32
 STATE_BITS = 8
-PREDICTION_BITS = 74
+# 75 and not 74 since lot 10: the escort needs to know whether the vessel a
+# neighbour is reporting was slow and over a cable, and that verdict is one bit
+# that has to survive the relay. A prediction nobody can act on is cheaper and
+# useless.
+PREDICTION_BITS = 75
 PRESENCE_CELL_BITS = 20
 
 
@@ -228,6 +232,13 @@ class Comms:
                 plausible=torch.where(
                     fresher, tracks.plausible.gather(1, source), tracks.plausible
                 ),
+                # Unconditional, unlike every field above it, which only
+                # moves when the neighbour's track is fresher. The verdict is
+                # not an estimate that a newer one supersedes, it is a thing
+                # that happened, so a vehicle with a fresher fix on the same
+                # vessel still wants to be told the vessel was caught. This is
+                # the instant alert: one hop the moment the link exists.
+                deviant=tracks.deviant | tracks.deviant.gather(1, source),
                 alarmed=tracks.alarmed | (fresher & tracks.alarmed.gather(1, source)),
             ),
             fresher,
@@ -345,5 +356,6 @@ def _adopt(into: Tracks, source: Tracks, index: torch.Tensor, take: torch.Tensor
         ),
         issuer=torch.where(take, source.issuer.gather(1, index), into.issuer),
         plausible=torch.where(take, source.plausible.gather(1, index), into.plausible),
+        deviant=into.deviant | source.deviant.gather(1, index),
         alarmed=into.alarmed | (take & source.alarmed.gather(1, index)),
     )

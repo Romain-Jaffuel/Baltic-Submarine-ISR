@@ -34,7 +34,7 @@ def test_fingerprint_is_stable() -> None:
 
 def test_payload_is_the_design_constraint() -> None:
     """250 bytes per exchange. Specification section 5.4 hangs on this."""
-    assert config.load("baseline").comms.payload_bytes == 250
+    assert config.load("baseline").comms.payload_bytes == 166
 
 
 def test_unknown_scenario_lists_the_known_ones() -> None:

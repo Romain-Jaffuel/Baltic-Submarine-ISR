@@ -172,6 +172,7 @@ def seeded(resolved: Config, statics: Statics, plausible: bool, on_lane: bool) -
         growth_m_per_s=torch.full((1, 1, 1), resolved.traffic.classes[0].growth_m_per_s),
         issuer=table.issuer,
         plausible=torch.full((1, 1, 1), plausible, dtype=torch.bool),
+        deviant=torch.full((1, 1, 1), not plausible, dtype=torch.bool),
         alarmed=torch.zeros(1, 1, 1, dtype=torch.bool),
     )
 

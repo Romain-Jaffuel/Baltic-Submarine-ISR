@@ -28,6 +28,11 @@ dev = [
     "hypothesis>=6.115",
     "pre-commit>=4.0",
     "types-pyyaml>=6.0",
+    # A hard ceiling on any single test. One unbounded `while` in the fleet
+    # tests waited for a quantity that could not reach its threshold, and the
+    # suite stopped returning rather than failing -- which is the worse of the
+    # two outcomes, because a failure is a message and a hang is a mystery.
+    "pytest-timeout>=2.3",
 ]
 render = [
     "matplotlib>=3.9",
@@ -83,6 +88,13 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Sixty seconds, against a slowest test of 2.8 s and a whole suite of 2 min.
+# Generous enough that a slow machine never trips it and tight enough that a
+# test which has stopped making progress says so while somebody is still
+# watching. `thread` rather than `signal` because signal-based timeouts do not
+# work on Windows, which is where this runs.
+timeout = 60
+timeout_method = "thread"
 
 [tool.coverage.run]
 source = ["src/baltic_isr"]

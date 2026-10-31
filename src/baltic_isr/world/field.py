@@ -40,6 +40,78 @@ def _seabed(statics: Statics, raster: torch.Tensor, xy: torch.Tensor) -> torch.T
     return sample_raster(statics, raster, xy, cell_m=statics.seabed_cell_m, centred=True)
 
 
+def _home(table: torch.Tensor, base: torch.Tensor, xy: torch.Tensor, cell_m: float) -> torch.Tensor:
+    """Gather bilinearly from a ``(bases, rows, columns, channels)`` table.
+
+    Each point reads its OWN base's layer, which is what makes this a gather
+    rather than a raster read: the fleet is split between moorings and a
+    vehicle's way home is its own.
+    """
+    _, rows, columns, _ = table.shape
+    column = (xy[..., 0] / cell_m - 0.5).clamp(0.0, columns - 1.001)
+    row = (xy[..., 1] / cell_m - 0.5).clamp(0.0, rows - 1.001)
+    left, bottom = column.floor().to(torch.long), row.floor().to(torch.long)
+    right, top = (left + 1).clamp(max=columns - 1), (bottom + 1).clamp(max=rows - 1)
+    fx = (column - left.to(column.dtype)).unsqueeze(-1)
+    fy = (row - bottom.to(row.dtype)).unsqueeze(-1)
+    index = base.to(torch.long)
+    lower = torch.lerp(table[index, bottom, left], table[index, bottom, right], fx)
+    upper = torch.lerp(table[index, top, left], table[index, top, right], fx)
+    return torch.lerp(lower, upper, fy)
+
+
+def distance_home_m(statics: Statics, base: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
+    """Return how far it actually is to a vehicle's own base, around the islands.
+
+    The geodesic distance over navigable water, not the straight line. The two
+    differ by 1.09x at the median and 4.69x at the worst cell in this box, and
+    it was the worst cell that killed vehicles: sized on the straight line,
+    the recall sent them home with a quarter of the energy the passage needed.
+
+    Parameters
+    ----------
+    statics : Statics
+        Device geometry.
+    base : Tensor
+        Which base each point belongs to, integer, shape ``(...)``.
+    xy : Tensor
+        Local metres, shape ``(..., 2)``.
+
+    Returns
+    -------
+    Tensor
+        Distance in metres along the water, shape ``(...)``.
+    """
+    table = statics.home_distance_m.unsqueeze(-1)
+    return _home(table, base, xy, statics.home_cell_m).squeeze(-1)
+
+
+def course_home(statics: Statics, base: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
+    """Return the unit course that leads home around the islands.
+
+    The descent direction of the geodesic field, which is a route rather than
+    a bearing. A vehicle steering the bearing instead made good 0.32 m/s of a
+    1.2 m/s cruise, because the bearing pointed at an island.
+
+    Parameters
+    ----------
+    statics : Statics
+        Device geometry.
+    base : Tensor
+        Which base each point belongs to, integer, shape ``(...)``.
+    xy : Tensor
+        Local metres, shape ``(..., 2)``.
+
+    Returns
+    -------
+    Tensor
+        Unit vectors, east then north, shape ``(..., 2)``.
+    """
+    route = _home(statics.home_route, base, xy, statics.home_cell_m)
+    unit: torch.Tensor = route / route.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    return unit
+
+
 def distance_to_coast(statics: Statics, xy: torch.Tensor) -> torch.Tensor:
     """Return signed distance to the nearer shore: positive at sea.
 

@@ -48,9 +48,12 @@ MODE_RETURNING = 2
 MODE_CHARGING = 3
 MODE_LOST = 4
 
-# How much longer the navigable way home is than the straight line, median
-# over the gulf. See _return_margin.
-_DETOUR = 1.4
+# Slack on top of the measured way home. The distance itself is now read off
+# the geodesic field, so this no longer stands in for the archipelago -- it
+# covers only what the field cannot know: a 0.08 m/s current that may be dead
+# on the nose the whole way, and the odd cell where the projection costs a
+# little ground. See _return_margin.
+_RETURN_SLACK = 1.15
 
 REGIME_DRIFT = 0
 REGIME_CRUISE = 1
@@ -451,7 +454,21 @@ class Fleet:
         bases = self._statics.bases[state.base]
         to_base = bases - state.xy
         range_to_base = to_base.norm(dim=-1)
-        base_heading = torch.atan2(to_base[..., 0], to_base[..., 1])
+
+        # The way home, around the islands rather than through them. Both the
+        # course and the distance come off the geodesic field: the bearing and
+        # the straight-line range are what this used to steer and budget on,
+        # and between them they cost 22 vehicles of 32 in a single episode.
+        way_home = field.distance_home_m(self._statics, state.base, state.xy)
+        route = field.course_home(self._statics, state.base, state.xy)
+        # The bearing survives as the fallback for a degenerate route vector,
+        # which is the berth cell itself -- the one minimum of the field, where
+        # there is no downhill left and the vehicle is already home.
+        base_heading = torch.where(
+            route.norm(dim=-1) > 0.5,
+            torch.atan2(route[..., 0], route[..., 1]),
+            torch.atan2(to_base[..., 0], to_base[..., 1]),
+        )
 
         wants_return = actions == ACTION_RETURN
         commanded_heading = self._headings[(actions % HEADINGS).clamp(0, HEADINGS - 1)]
@@ -459,7 +476,7 @@ class Fleet:
 
         # The forced recall of specification section 2.5. Not a decision: below
         # the energy it takes to get home at cruise, the policy loses the helm.
-        margin = self._return_margin(range_to_base)
+        margin = self._return_margin(way_home)
         recalled = (state.energy_j < margin) & (state.mode == MODE_DEPLOYED)
         returning = recalled | (wants_return & (state.mode == MODE_DEPLOYED))
 
@@ -578,16 +595,20 @@ class Fleet:
             timer_s=timer,
         )
 
-    def _return_margin(self, range_to_base: torch.Tensor) -> torch.Tensor:
+    def _return_margin(self, distance_home_m: torch.Tensor) -> torch.Tensor:
         """Return the energy a vehicle must keep in hand to reach its base."""
         auv = self._config.auv
         cruise = auv.regimes.cruise_ms
-        # Inflated by the measured detour. The range here is a straight line,
-        # and in this archipelago the navigable way home is 1.39x that at the
-        # median -- so a margin sized on the straight line sends a vehicle
-        # back with too little in hand and it dies on the way. Measured by
-        # Dijkstra over the navigable grid; the factor is deliberately the
-        # median rather than the tail, because sizing for a 4x worst case
-        # would keep the whole fleet alongside.
-        transit = _DETOUR * power.power_w(cruise, auv) * range_to_base / cruise
+        # Sized on the distance the vehicle will actually swim, which is the
+        # whole correction. This used to take the straight-line range and
+        # inflate it by the MEDIAN detour, 1.4x. A median is the wrong statistic
+        # to buy insurance with: the distribution has a 4.69x cell in it, and it
+        # was the vehicles in the tail that died -- 22 of 32 in one episode,
+        # every one of them having dutifully turned for home. Raising the factor
+        # to cover the tail would have kept the fleet alongside, which is why it
+        # was not done. Reading the real distance costs one gather and makes the
+        # question go away: the field knows that this cell is 4.69x and that one
+        # is 1.02x.
+        way_home = _RETURN_SLACK * distance_home_m
+        transit = power.power_w(cruise, auv) * way_home / cruise
         return transit + auv.energy_reserve_fraction * auv.battery_j

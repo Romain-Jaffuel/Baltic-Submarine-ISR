@@ -134,14 +134,25 @@ def test_a_fleet_that_guards_cables_scores_higher(resolved: Config) -> None:
 def test_guarding_cables_lowers_their_exposure() -> None:
     """The same claim measured on the film's own quantity, not the reward's.
 
-    Needs a longer horizon than the reward does: the patrol spends its first
-    hours transiting to its slice of cable, so over six simulated hours the
-    lawnmower's incidental crossings are still ahead. Over a day it is not
-    close -- 5.96 h of mean exposure against 9.42 over a full episode.
+    Needs a longer horizon than the reward does, and the horizon it needs has
+    moved. The patrol spends its first hours transiting to its slice of cable
+    while the lawnmower is already crossing cables incidentally, so early on
+    the sweep leads. Measured, mean exposure in hours:
+
+        decisions   12 h    24 h    36 h    48 h
+        patrol     12.33   18.80   21.73   28.23
+        sweep      10.34   18.03   25.60   31.54
+
+    The crossover sits between 24 h and 36 h. It used to sit before 24 h, and
+    two changes pushed it out: the moorings went forward onto islands, which
+    rearranged every base-to-cable transit, and the arrival radius came down
+    from 8 km to 1.5 km, which makes a homecoming cost what it should. Both
+    charge the patrol more than the sweep, because the patrol is the one with
+    somewhere specific to be.
     """
     resolved = tweak(fleet={"count": 12})
-    patrol, _ = walk(resolved, CablePatrol, decisions=96)
-    sweep, _ = walk(resolved, Lawnmower, decisions=96)
+    patrol, _ = walk(resolved, CablePatrol, decisions=144)
+    sweep, _ = walk(resolved, Lawnmower, decisions=144)
     assert float((patrol.t - patrol.cable_heard_s).mean()) < float(
         (sweep.t - sweep.cable_heard_s).mean()
     )

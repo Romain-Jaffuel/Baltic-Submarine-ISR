@@ -216,6 +216,12 @@ class Tracks:
         model that pays for talking.
     plausible : Tensor
         Whether the plausibility model cleared it for release.
+    deviant : Tensor
+        Whether the plausibility model judged it slow for its class *and* over
+        a cable -- the one signature this project is named after. Narrower than
+        ``~plausible`` on purpose: ``~plausible`` also fires on ordinary moving
+        traffic, and a predicate that fires on moving traffic turns "escort the
+        suspect" into "stand where ships pass".
     alarmed : Tensor
         Whether this vehicle has seen this contact contradict its own prediction.
     """
@@ -230,6 +236,7 @@ class Tracks:
     growth_m_per_s: torch.Tensor
     issuer: torch.Tensor
     plausible: torch.Tensor
+    deviant: torch.Tensor
     alarmed: torch.Tensor
 
     @property
@@ -270,6 +277,7 @@ def empty(worlds: int, vehicles: int, vessels: int, device: torch.device | str =
         growth_m_per_s=torch.ones(shape, device=device),
         issuer=torch.full(shape, NO_ISSUER, dtype=torch.int16, device=device),
         plausible=torch.zeros(shape, dtype=torch.bool, device=device),
+        deviant=torch.zeros(shape, dtype=torch.bool, device=device),
         alarmed=torch.zeros(shape, dtype=torch.bool, device=device),
     )
 
@@ -359,6 +367,7 @@ class Picture:
         measured: torch.Tensor,
         listener: torch.Tensor,
         plausible: torch.Tensor,
+        deviant: torch.Tensor,
         growth: torch.Tensor,
         rail: torch.Tensor,
         progress: torch.Tensor,
@@ -387,6 +396,10 @@ class Picture:
             Each vehicle's believed position, ``(worlds, vehicles, 2)``.
         plausible : Tensor
             What the plausibility model concluded, ``(worlds, vehicles, vessels)``.
+        deviant : Tensor
+            Whether it was judged slow for its class and over a cable, same
+            shape. Carried per track because the verdict is frozen at the last
+            sighting and travels over the modem with the rest of it.
         growth : Tensor
             Ellipse growth rate implied by the observed class.
         rail, progress, direction : Tensor
@@ -482,6 +495,14 @@ class Picture:
                 ),
                 issuer=torch.where(detected, me, tracks.issuer),
                 plausible=torch.where(detected, plausible & ~deviated, tracks.plausible),
+                # Latching, unlike `plausible`: a vessel caught loitering over
+                # a cable stays a target of the escort once it gets under way
+                # again. A verdict that expires is a verdict no vehicle can act
+                # on -- measured, a deviation lasts 3.0 h while the nearest
+                # drone is 22.8 km out, 5.3 h at cruise, so the only vehicles a
+                # perishable flag could ever pay were the ones already there.
+                # See docs/constants.md C-13-10.
+                deviant=tracks.deviant | (detected & deviant),
                 alarmed=(tracks.alarmed | deviated) & ~agreed,
             ),
             deviated,

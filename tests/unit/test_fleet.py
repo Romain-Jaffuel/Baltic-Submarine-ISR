@@ -137,20 +137,51 @@ def test_a_vehicle_held_off_the_shore_still_makes_good_along_it() -> None:
     """Blocking has to show up in the dead reckoning, not just the truth.
 
     Zeroing the motion while advancing the believed position is what made the
-    estimate diverge without bound in batch 2. A vehicle pinned against the
-    coast makes good the along-shore component and nothing more, and its DVL
-    measures exactly that -- so truth and belief stay the same distance apart.
+    estimate diverge without bound in batch 2. The belief is integrated from
+    the displacement the vehicle actually achieved, so a vehicle pinned against
+    the coast accrues error in proportion to the along-shore distance it makes
+    good -- not to the distance it was ordered to cover.
     """
-    fleet, state, fixed = build(small(6), worlds=1)
+    resolved = small(6)
+    fleet, state, fixed = build(resolved, worlds=1)
     northern = state.xy[..., 1] > fixed.extent[1] * 0.5
     at_the_shore = torch.where(northern, 0, 4) + auv_module.REGIME_CRUISE * auv_module.HEADINGS
-    for tick in range(600):
-        state = fleet.step(state, at_the_shore, tick * 60.0, 60.0)
 
-    pinned = (state.xy - fixed.bases[state.base]).norm(dim=-1) >= 3_000.0
-    assert bool(pinned.any())
-    error = (state.estimate - state.xy).norm(dim=-1)[pinned]
-    assert float(error.max()) < 5_000.0
+    ticks = 120
+    commanded = resolved.auv.regimes.cruise_ms * 60.0 * ticks
+
+    # Reaching base snaps the belief to the quay while the vehicle sits where
+    # it is, so a homecoming writes the whole arrival radius into this error
+    # at a stroke -- kilometres of it, and nothing to do with the shore. Watch
+    # only the vehicles that stay at sea for the whole window.
+    at_sea = state.mode == auv_module.MODE_DEPLOYED
+    before = (state.estimate - state.xy).norm(dim=-1)
+    made_good = torch.zeros_like(before)
+    previous = state.xy.clone()
+    for tick in range(ticks):
+        state = fleet.step(state, at_the_shore, tick * 60.0, 60.0)
+        made_good += (state.xy - previous).norm(dim=-1)
+        previous = state.xy.clone()
+        at_sea &= state.mode != auv_module.MODE_CHARGING
+    grew = (state.estimate - state.xy).norm(dim=-1) - before
+    assert int(at_sea.sum()) >= 3
+
+    # The command drives the whole fleet into the coast, so the coast has to
+    # hold somebody back. The bound is 0.85 and it used to be 0.5, which was a
+    # number taken off the one geometry that existed when it was written: with
+    # two bases the test fleet started where somebody was jammed hard against a
+    # shore, and adding the Vergi base moved every starting berth, so the most
+    # obstructed vehicle now makes good 0.73 of its order instead of under a
+    # half. The claim is that the shore costs made-good distance, not that it
+    # costs any particular fraction of it, and 0.85 still fails outright if the
+    # coast stops holding anybody.
+    assert bool((at_sea & (made_good < commanded * 0.85)).any())
+
+    # Error follows the distance achieved, not the distance ordered. The
+    # compass bias is a fraction of a degree, so the ratio sits around a
+    # hundredth; running the estimate on the commanded velocity instead left
+    # it unbounded, which is the regression this guards.
+    assert float((grew[at_sea] / made_good[at_sea].clamp_min(1.0)).max()) < 0.02
 
 
 def test_stations_are_drawn_where_a_vehicle_can_actually_sit() -> None:
@@ -348,16 +379,50 @@ def test_the_recall_brings_them_home() -> None:
 
 
 def test_transit_out_costs_the_predicted_share(resolved: Config) -> None:
-    """C-3-04: 39.9 km at cruise is about nine hours and a fifth of the battery."""
+    """C-3-04: reaching the middle of the box costs a few hours and a sixth of a battery."""
     fleet, state, fixed = build(cold(4), worlds=2)
     centre = fixed.extent * 0.5
     step_s, elapsed = 300.0, 0.0
-    while float(fleet.distance_to_base(state).mean()) < 39_000.0:
+
+    # Measured from the geometry, not written in. The radius was 39.9 km, then
+    # 39.0, and is now 33.4 because the moorings went forward onto Isosaari and
+    # Naissaar -- three numbers for one unchanged fact, each of which broke this
+    # test when it changed. Asking the box where its centre is costs one line
+    # and the question stops going stale.
+    radius = float((fixed.bases - centre).norm(dim=-1).min())
+    assert 25_000.0 < radius < 45_000.0, radius
+    # Short of the centre by a twentieth, because the vehicle that gets closest
+    # is steering for a point it need not arrive at exactly.
+    target = 0.95 * radius
+
+    # The radius belongs to a vehicle, so it is asked of the vehicle that has
+    # it. Asked of the fleet MEAN it cannot be answered at all: the fleet
+    # spreads out and cycles through its sorties, so the mean tops out at
+    # 32.2 km and oscillates there for as long as it is run -- measured over
+    # 167 simulated hours. The wait for it was an unbounded loop that never
+    # came back, and a test that never returns is worse than one that fails.
+    # See tests/unit/test_suite_hygiene.py.
+    reach = fleet.distance_to_base(state)
+    for _ in range(600):
+        if float(reach.max()) >= target:
+            break
         elapsed += step_s
         state = fleet.step(state, toward(state, centre, auv_module.REGIME_CRUISE), elapsed, step_s)
-    spent = 1.0 - float(state.energy_j.mean()) / resolved.auv.battery_j
-    assert 8.0 < elapsed / 3600.0 < 11.0
-    assert 0.15 < spent < 0.25
+        reach = fleet.distance_to_base(state)
+    else:
+        raise AssertionError(f"no vehicle reached {target / 1000:.1f} km in 50 hours")
+
+    furthest = int(reach.reshape(-1).argmax())
+    spent = 1.0 - float(state.energy_j.reshape(-1)[furthest]) / resolved.auv.battery_j
+
+    # Measured: 7.33 h and 0.155 of a battery to 31.8 km, against 7.74 h for
+    # the same distance in a straight line at cruise with no current. It comes
+    # in UNDER the straight-line figure because the current sets 0.08 m/s at
+    # 075 degrees and the run out is roughly downstream -- the way back pays it
+    # straight back. Nine hours and a fifth of a battery was the figure from
+    # the port moorings.
+    assert 6.0 < elapsed / 3600.0 < 10.0
+    assert 0.10 < spent < 0.22
 
 
 def test_the_turnaround_takes_handling_plus_charging(resolved: Config) -> None:
@@ -376,16 +441,62 @@ def test_the_turnaround_takes_handling_plus_charging(resolved: Config) -> None:
 
 
 def test_dead_reckoning_drifts_with_distance() -> None:
-    """Compass bias, not the current: the error grows with path length."""
-    fleet, state, _ = build(cold(8, navigation={"surface_trigger_m": 1.0e9}), worlds=8)
-    action = hold(state, auv_module.REGIME_CRUISE, heading=2)
-    step_s, early, late = 300.0, 0.0, 0.0
-    for index in range(int(20.0 * 3600.0 / step_s)):
-        state = fleet.step(state, action, (index + 1) * step_s, step_s)
-        if index == int(5.0 * 3600.0 / step_s):
-            early = float(state.drift_error_m.mean())
-        late = float(state.drift_error_m.mean())
-    assert late > 2.0 * early > 0.0
+    """Compass bias, not the clock: the error grows with the path run.
+
+    The two are separated by holding the clock still and changing the path.
+    Over the same twelve hours a drifting fleet makes 2.6 km, a cruising one
+    20.5 and a sprinting one 51.9 -- and the believed-position error comes out
+    at 27.7 m, 196.8 m and 725.2 m. Twenty times the path, twenty-six times the
+    error. An error that accrued with the clock would read the same in all
+    three.
+
+    What makes the drifting case move at all is the current: 0.08 m/s for
+    twelve hours is 3.5 km, the DVL measures that ground track like any other,
+    and the compass bias rotates it like any other. Which is the same claim
+    from the other side -- the error is bought by the ground covered, however
+    the vehicle came to cover it.
+
+    This used to hold a fixed easterly heading and assert that the error
+    doubled over twenty hours. That worked while the fleet ran into Estonia
+    and stopped, and stopped working the moment the moorings moved, because
+    what the test actually measured was where the coast was.
+    """
+    ticks, step_s = int(12.0 * 3600.0 / 300.0), 300.0
+    paths: dict[int, float] = {}
+    errors: dict[int, float] = {}
+    for regime in (auv_module.REGIME_DRIFT, auv_module.REGIME_CRUISE, auv_module.REGIME_SPRINT):
+        fleet, state, _ = build(cold(8, navigation={"surface_trigger_m": 1.0e9}), worlds=8)
+        path = torch.zeros_like(state.energy_j)
+        previous = state.xy.clone()
+        for index in range(ticks):
+            action = toward(state, state.station, regime)
+            state = fleet.step(state, action, (index + 1) * step_s, step_s)
+            path += (state.xy - previous).norm(dim=-1)
+            previous = state.xy.clone()
+        paths[regime] = float(path.mean())
+        errors[regime] = float(state.drift_error_m.mean())
+
+    # The three runs really did cover different ground, which is the premise.
+    #
+    # 1.5 and not 2.0 for the sprint. Sprint is 2.5 m/s against a 1.2 m/s
+    # cruise, so the free-water ceiling on this ratio is 2.08 and a bound of
+    # 2.0 left four per cent of headroom for every obstruction in the gulf --
+    # it passed on the old two-base geometry and fails at 1.83 on the new one
+    # without anything about the vehicle model having changed. A premise that
+    # the runs covered different ground does not need the ratio to sit within
+    # a whisker of its own ceiling.
+    assert paths[auv_module.REGIME_SPRINT] > 1.5 * paths[auv_module.REGIME_CRUISE]
+    assert paths[auv_module.REGIME_CRUISE] > 2.0 * paths[auv_module.REGIME_DRIFT]
+
+    # And the error went with it, which is the claim.
+    assert errors[auv_module.REGIME_SPRINT] > 2.0 * errors[auv_module.REGIME_CRUISE]
+    assert errors[auv_module.REGIME_CRUISE] > 2.0 * errors[auv_module.REGIME_DRIFT]
+
+    # At a rate set by the compass, so roughly common to all three: measured,
+    # 10.6, 9.6 and 14.0 metres per kilometre run.
+    for regime, distance in paths.items():
+        rate = errors[regime] / (distance / 1000.0)
+        assert 5.0 < rate < 25.0, (regime, rate)
 
 
 def test_the_current_is_not_the_navigation_error() -> None:
@@ -394,40 +505,65 @@ def test_the_current_is_not_the_navigation_error() -> None:
     A bottom-locked DVL measures velocity over ground, so the current is inside
     the measurement. Removing it must barely change the drift; removing the
     compass bias must nearly abolish it.
+
+    Compared as a RATE -- error per kilometre run -- rather than as a total.
+    Totals answer the same question only if the three runs cover the same
+    ground, and they do not: the current is worth 0.08 m/s and the fleet rides
+    it, so in ten hours the baseline covers 16.3 km against 10.5 km with the
+    current switched off. A comparison of totals charges the current for the
+    distance it granted, and duly read a 33 % effect from a mechanism that has
+    none.
     """
     cases: dict[str, dict[str, Any]] = {
         "baseline": {},
         "no_current": {"environment": {"current_speed_ms": 0.0}},
         "no_bias": {"navigation": {"heading_bias_sigma_deg": 0.0}},
     }
-    drifts = {}
+    rates = {}
     for name, overrides in cases.items():
         settings: dict[str, Any] = {"navigation": {"surface_trigger_m": 1.0e9}}
         for section, values in overrides.items():
             settings[section] = {**settings.get(section, {}), **values}
         fleet, state, _ = build(cold(8, **settings), worlds=8)
-        action = hold(state, auv_module.REGIME_CRUISE, heading=2)
+        path = torch.zeros_like(state.energy_j)
+        previous = state.xy.clone()
         for index in range(int(10.0 * 3600.0 / 300.0)):
+            # Steered at its own station, so the fleet keeps covering ground.
+            # Held on a fixed heading it arrives at a shore and stops, and a
+            # drift rate measured over a fleet that is not moving is noise.
+            action = toward(state, state.station, auv_module.REGIME_CRUISE)
             state = fleet.step(state, action, (index + 1) * 300.0, 300.0)
-        drifts[name] = float(state.drift_error_m.mean())
-    assert drifts["no_current"] == pytest.approx(drifts["baseline"], rel=0.25)
-    assert drifts["no_bias"] < 0.2 * drifts["baseline"]
+            path += (state.xy - previous).norm(dim=-1)
+            previous = state.xy.clone()
+        rates[name] = float(state.drift_error_m.mean()) / (float(path.mean()) / 1000.0)
+
+    # Measured: 10.89 m per km, 12.85 without the current, 0.62 without the
+    # compass bias. The current is worth 18 % of the rate -- it is in the
+    # measurement, not beside it -- and the bias is worth 94 % of it.
+    assert rates["no_current"] == pytest.approx(rates["baseline"], rel=0.25)
+    assert rates["no_bias"] < 0.2 * rates["baseline"]
 
 
 def test_surfacing_bounds_the_drift() -> None:
     """What the fix buys, measured against not having it.
 
     The claim is not that the error shrinks at some instant -- it oscillates --
-    but that surfacing *bounds* it, so the run is done twice and compared. The
-    trigger is lowered from the configured 1500 m because at 1500 m the vehicle
-    reaches the edge of the box and stops before it ever comes due.
+    but that surfacing *bounds* it, so the run is done twice and compared.
+
+    The trigger is lowered from the configured 1500 m to make the contrast
+    sharp: at 1500 m the fleet covers the same 37.5 km and ends on 193.6 m
+    against 214.9 m, which is a bound but a loose one. At 300 m it ends on
+    25.6 m. The old reason for lowering it was that at 1500 m the vehicle
+    reached the edge of the box and stopped before ever coming due, which was
+    true of a fleet held on a fixed heading and is not true of one steered at
+    its stations.
     """
     duration_s, step_s = 20.0 * 3600.0, 300.0
     drifts, surfaced = [], False
     for trigger in (300.0, 1.0e9):
         fleet, state, _ = build(cold(8, navigation={"surface_trigger_m": trigger}), worlds=8)
-        action = hold(state, auv_module.REGIME_CRUISE, heading=2)
         for index in range(int(duration_s / step_s)):
+            action = toward(state, state.station, auv_module.REGIME_CRUISE)
             state = fleet.step(state, action, (index + 1) * step_s, step_s)
             surfaced = surfaced or bool((state.mode == auv_module.MODE_SURFACING).any())
         drifts.append(float(state.drift_error_m.mean()))

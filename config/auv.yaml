@@ -71,10 +71,36 @@ acoustics:
 
 comms:
   frequency_hz: 25000.0
-  # Multipath, not level, sets this. The level budget alone would allow 12 km;
+  # Multipath, not level, sets this. The level budget alone would allow 19.4 km;
   # delay spread in a 50 m waveguide does not. See docs/constants.md C-6-02.
-  range_m: 4000.0
-  bitrate_bps: 1000.0
+  #
+  # 6 km, up from 4, and it is bought rather than asserted. Delay spread grows
+  # with range while the spread a symbol tolerates is the symbol period, so
+  # range goes as 1/bitrate: 1.5 times the reach costs 1.5 times the symbol
+  # rate, hence 667 bps below. It stays at 31 % of the level budget, so the
+  # binding constraint is still the channel and the gap is still visible.
+  #
+  # The reason to spend it is the escort. Measured over 9 338 vehicle-decisions,
+  # a vehicle that finds a loitering vessel can reach 1.99 vehicles through the
+  # relay graph at 4 km -- itself and almost nobody -- against 3.08 at 6 km.
+  # Since only an informed vehicle converges, 4 km caps the escort at one drone
+  # however the reward is written. 6 km is what makes a one-to-three escort a
+  # thing the fleet can actually form. See docs/constants.md C-13-11.
+  # 8 km was tried and put back. The relay graph does widen -- it reaches
+  # 1.99 vehicles at 4 km, 3.08 at 6 and 4.34 at 8 -- but isolation falls to
+  # 19.5 %, and a fleet whose vehicles have company four times in five is not
+  # the delay-tolerant network this project is about. The channel margin goes
+  # with it, from thirteen passes of the whole track table per decision to
+  # eight. The convergence problem is not a shortage of informed vehicles; it
+  # is a shortage of visits to the ends of the cable network, which is paid
+  # for in reward.learn.env._cable_credit rather than in hertz.
+  range_m: 6000.0
+  # 667 and not 1000: see range_m. One exchange now carries 166 bytes and 16
+  # predictions rather than 250 and 25. The pipe was measured not to be the
+  # binding constraint and `predictions_per_message` is reported rather than
+  # enforced, so this costs the simulation nothing -- but it is the honest
+  # price of the range and it is recorded as such rather than hidden.
+  bitrate_bps: 667.0
   slot_s: 2.0
   protocol_latency_s: 1.0
   source_level_db: 180.0

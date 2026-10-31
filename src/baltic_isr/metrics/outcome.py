@@ -127,7 +127,13 @@ class Scorer:
         # An alarm is an event. Counting the standing state once per decision
         # turned six false alarms into eighty per vessel-day, because an alarm
         # that is never cleared was counted a hundred and ninety-two times.
-        innocent = (known & tracks.alarmed & ~state.traffic.deviating.unsqueeze(1)).any(dim=1)
+        # Both ways of concluding, so that widening what counts as noticing a
+        # deviation is paid for here. A watch-list entry on a vessel that never
+        # deviated is a false alarm whether it came from the tracking gate or
+        # from the plausibility judgement.
+        slow = tracks.velocity.norm(dim=-1) < self._config.reward.shadow_slow_ms
+        concluded = tracks.alarmed | (tracks.deviant & slow)
+        innocent = (known & concluded & ~state.traffic.deviating.unsqueeze(1)).any(dim=1)
         if self._was_alarmed is None:
             self._was_alarmed = torch.zeros_like(innocent)
         self._false += float((innocent & ~self._was_alarmed).sum())

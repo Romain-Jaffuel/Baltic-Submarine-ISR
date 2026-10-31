@@ -32,6 +32,12 @@ RAIL_SAMPLES = 256
 # megabyte, and finer than the three kilometre corridors it describes.
 RASTER_CELL_M = 500.0
 
+# What an unreachable cell's distance home becomes. The longest route in this
+# box is 121 km, so 400 km is unmistakably "there is no way from here" while
+# still being a finite number the margin can multiply. An infinity here would
+# turn one unreachable cell into a NaN that spreads across the batch.
+_HOME_SATURATION_M = 400_000.0
+
 
 def _resample(line: geo.Polyline, samples: int) -> np.ndarray:
     """Return ``samples`` points evenly spaced along a polyline."""
@@ -88,6 +94,17 @@ class Statics:
         because an archipelago needs it. A plain float, deliberately: reading
         a scalar off a device tensor inside the step synchronises the host,
         and this one is read on every depth lookup.
+    home_distance_m : Tensor
+        Geodesic distance to each base over navigable water, shape
+        ``(bases, rows, columns)`` on a raster of ``home_cell_m``, saturating
+        where no route exists. The recall margin is sized on this, because the
+        straight line is not a journey any vehicle here can make.
+    home_route : Tensor
+        The unit course that walks ``home_distance_m`` downhill, shape
+        ``(bases, rows, columns, 2)``. What a returning vehicle steers.
+    home_cell_m : float
+        Cell size of the two home fields. A plain float, for the same reason
+        ``seabed_cell_m`` is one.
     cable_xy : Tensor
         Points along every seabed cable that lie at sea, shape ``(samples, 2)``.
         What the fleet is paid to keep watched, and what the map shades.
@@ -112,6 +129,9 @@ class Statics:
     min_water_m: float
     berth_clearance_m: float
     seabed_cell_m: float
+    home_distance_m: torch.Tensor
+    home_route: torch.Tensor
+    home_cell_m: float
     rail_distance_m: torch.Tensor
     corridor_distance_m: torch.Tensor
     bases: torch.Tensor
@@ -193,6 +213,18 @@ def build(config: Config, device: torch.device | str = "cpu") -> Statics:
                 f"configuration says {configured}. Rebuild it:\n"
                 f"    uv run python scripts/ingest_geodata.py"
             )
+    # And the same for the bases, because the route fields are indexed by base.
+    # Move a base in the configuration without rebuilding and every recalled
+    # vehicle steers for where the base used to be, which is the kind of bug
+    # that looks like a policy failure for a week.
+    baked_bases = [str(name) for name in cast(list[str], seabed.metadata["bases"])]
+    configured_bases = [base.name for base in config.bases]
+    if baked_bases != configured_bases:
+        raise ValueError(
+            f"the seabed product was built for bases {baked_bases} but the "
+            f"configuration says {configured_bases}. Rebuild it:\n"
+            f"    uv run python scripts/ingest_geodata.py"
+        )
 
     columns = int(np.ceil((x_max - x_min) / RASTER_CELL_M)) + 1
     rows = int(np.ceil((y_max - y_min) / RASTER_CELL_M)) + 1
@@ -230,6 +262,13 @@ def build(config: Config, device: torch.device | str = "cpu") -> Statics:
         min_water_m=config.fleet.min_water_m,
         berth_clearance_m=config.fleet.berth_clearance_m,
         seabed_cell_m=seabed.cell_m,
+        # Saturated rather than infinite: the margin multiplies this, and an
+        # inf would turn one unreachable cell into a NaN across the batch.
+        home_distance_m=torch.from_numpy(
+            np.nan_to_num(seabed.home_distance_m, posinf=_HOME_SATURATION_M)
+        ).to(device),
+        home_route=torch.from_numpy(seabed.home_route).to(device),
+        home_cell_m=seabed.home_cell_m,
         rail_distance_m=nearest(geometry.rails),
         corridor_distance_m=nearest(geometry.corridors),
         bases=local(geometry.bases),

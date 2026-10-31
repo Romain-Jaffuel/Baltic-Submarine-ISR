@@ -57,27 +57,42 @@ def seeded(worlds: int, vehicles: int, vessels: int, device: str = "cpu") -> Tra
 # --- the budget: the stated criterion, and what it actually says ------------
 
 
-def test_one_exchange_carries_two_hundred_and_fifty_bytes(resolved: Config) -> None:
-    """Batch 5 acceptance, as written in specification section 5.4."""
-    assert resolved.comms.payload_bytes == 250
+def test_one_exchange_carries_a_hundred_and_sixty_six_bytes(resolved: Config) -> None:
+    """Specification section 5.4 said 250, and the range was bought with the rest.
+
+    Delay spread grows with range while the spread a symbol tolerates is the
+    symbol period, so reach goes as 1/bitrate. Lot 10 spent a third of the
+    symbol rate to take the modem from 4 km to 6 km, because only an informed
+    vehicle converges on a suspect and at 4 km the finder could reach 1.99
+    vehicles through the relay graph against 3.08 at 6 km. The payload went
+    with it. The next test is the one that says whether that was affordable.
+    """
+    assert resolved.comms.payload_bytes == 166
 
 
 def test_the_message_of_the_specification_fits(comms: Comms) -> None:
     """Header, own position, state, three predictions, four presence cells."""
-    assert message_bits(predictions=3, presence_cells=4) == 374
+    assert message_bits(predictions=3, presence_cells=4) == 377
     assert message_bits(predictions=3, presence_cells=4) <= comms.payload_bits
 
 
 def test_the_budget_is_not_the_binding_constraint(comms: Comms, resolved: Config) -> None:
     """The batch 5 finding, pinned so the claim cannot quietly stop being true.
 
-    A packet holds 27 predictions and the whole table is 180. Two exchanges and
-    a bit, against roughly a hundred available per decision. The pipe is wide.
+    A packet holds 16 predictions and the whole table is 180, so eleven and a
+    bit exchanges clear it -- against 146 turns on the channel per decision.
+    The pipe still passes the entire table thirteen times a decision.
+
+    It passed it twenty-six times before lot 10 bought range with symbol rate,
+    and halving that margin is the whole price of the 6 km modem. The claim is
+    the same claim and the ordering of constraints has not moved: a vehicle is
+    alone 36 % of the time at 6 km, so what information costs is still a
+    rendezvous and not a bit.
     """
-    assert comms.predictions_per_message >= 25
+    assert comms.predictions_per_message >= 16
     per_decision = resolved.simulation.decision_interval_s / comms.slot_s()
     whole_table = resolved.traffic.n_vessels / comms.predictions_per_message
-    assert per_decision > 20.0 * whole_table
+    assert per_decision > 10.0 * whole_table
 
 
 def test_a_belief_grid_would_never_fit(comms: Comms) -> None:
@@ -112,13 +127,32 @@ def test_close_vehicles_hear_each_other(comms: Comms, statics: Statics) -> None:
     assert not bool(links.reachable[0, 0, 0])
 
 
-def test_the_fleet_is_isolated_most_of_the_time(
+def test_the_fleet_is_not_a_connected_network(
     resolved: Config, statics: Statics, comms: Comms
 ) -> None:
     """The batch 5 finding, measured on a real episode rather than asserted.
 
     This is what makes the network delay-tolerant: predictions move because a
     vehicle carries them until it meets someone, not because it can call.
+
+    **It used to say "isolated most of the time" and lot 10 made that false.**
+    Buying the modem 6 km of range instead of 4 took isolation from 49.8 % to
+    31.1 % on this probe, which is the change being paid for: at 4 km the
+    vehicle that finds a loitering vessel reaches 1.99 vehicles through the
+    relay graph and can form no escort at all. The premise survives the change
+    and the headline does not -- a third of the time is not most of the time,
+    and a fleet of forty whose relay graph reaches 3.08 of them is still not a
+    network. The band is widened to the new figure rather than the claim being
+    quietly restated around it.
+
+    A band and not a floor. The bound used to be a bare ``> 0.5`` against a
+    quantity that measured 49.8 %, so the test was balanced on its own
+    threshold: moving the bases onto islands and then excluding 0.44 % of the
+    water as unroutable was enough to tip it, with nothing about the comms
+    model having changed. A band catches a real regression in either
+    direction -- a fleet that has become a connected network, or one that has
+    scattered so far it never meets -- which is what the claim is actually
+    about.
     """
     fleet = Fleet(resolved, statics, 8)
     state = fleet.reset()
@@ -131,7 +165,10 @@ def test_the_fleet_is_isolated_most_of_the_time(
         total += int(degree.numel())
         action = torch.full_like(state.regime, auv_module.REGIME_CRUISE * auv_module.HEADINGS)
         state = fleet.step(state, action, (index + 1) * step_s, step_s)
-    assert alone / total > 0.5
+    # Measured 31.1 % with the fleet flying one heading out of the island bases
+    # and a 6 km modem, against 49.8 % at 4 km. Measured over 9 338
+    # vehicle-decisions of the learned policy the same quantity is 36 %.
+    assert 0.20 < alone / total < 0.50
 
 
 def test_a_surfaced_vehicle_is_off_the_acoustic_net(comms: Comms, statics: Statics) -> None:

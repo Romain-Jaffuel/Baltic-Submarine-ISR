@@ -30,6 +30,7 @@ import argparse
 import datetime as dt
 import io
 import json
+import math
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +40,8 @@ import yaml
 from PIL import Image
 from pyproj import Transformer
 from scipy import ndimage
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import dijkstra
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -91,6 +94,247 @@ MIN_COAST_RING_M = 400.0
 # The thresholds come from the configuration and are written into the metadata,
 # so world.statics can refuse to run against a product built for different
 # ones rather than silently using the wrong field.
+
+# The way home, as a field rather than a bearing.
+#
+# A recalled vehicle used to steer the straight bearing to its base, and an
+# archipelago does not grant straight lines. Measured over a 48 h episode:
+# vehicles recalled at a median 37.5 km made good 0.32 m/s against a 1.2 m/s
+# cruise -- 27 % -- grinding along whatever island lay across the bearing, and
+# 22 of 32 died doing it. They had been sent home with energy sized on the
+# straight line times 1.4, while the passage actually cost 3.75x.
+#
+# One field fixes both halves. Geodesic distance to each berth over the water
+# the fleet may use, solved once here by Dijkstra on the eight-connected grid:
+# the distance sizes the recall margin honestly, and its descent direction IS
+# the route. Sizing the old margin for the measured 3.75x instead would have
+# kept the whole fleet alongside, which is not a fix, it is a surrender.
+#
+# Solved at the full 100 m and stored every other cell. 200 m still resolves
+# the channels a 3.5 m vehicle needs -- and anything finer than that is
+# push_offshore's job, not the route's.
+HOME_STRIDE = 2
+HOME_QUANTUM_M = 10.0
+HOME_UNREACHABLE = 65535
+
+# Four masked box blurs over the descent field. Pure eight-neighbour descent is
+# correct and ugly: it can only ever point along one of eight bearings, so a
+# 30 km passage comes out as a staircase and the film shows it. Smoothing mixes
+# neighbouring descent directions, which stay descent directions, and the
+# vehicle's own turn-rate limit does the rest.
+HOME_SMOOTH_PASSES = 4
+
+_STEPS = tuple(
+    (dy, dx, math.hypot(dy, dx)) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dy, dx) != (0, 0)
+)
+
+
+def _ways_home(
+    masks: list[np.ndarray], cell_m: float, berths: list[tuple[int, int]]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return geodesic distance to each berth, and the route field that descends it.
+
+    Parameters
+    ----------
+    masks : list of ndarray
+        One boolean mask per base, True where a vehicle bound for THAT base may
+        be. Per base because the rule is: water under the keel out in the gulf,
+        clearance off the quay inside the approach to its own mooring. Each
+        must already be eroded, so that a route never threads a cell the
+        projection would push it out of.
+    cell_m : float
+        Cell size in metres.
+    berths : list of tuple of int
+        One ``(row, column)`` per base. Snapped to the nearest allowed cell if
+        the berth itself falls outside its own mask.
+
+    Returns
+    -------
+    tuple of ndarray
+        Distance in metres, ``(bases, rows, columns)``, infinite where no
+        route exists; and the unit route field, ``(bases, rows, columns, 2)``
+        as east and north, zero where there is no route.
+    """
+    rows, columns = masks[0].shape
+    distance = np.full((len(berths), rows, columns), np.inf)
+    route = np.zeros((len(berths), rows, columns, 2))
+    for index, ((row, column), allowed) in enumerate(zip(berths, masks, strict=True)):
+        field = _solve(allowed, cell_m, row, column)
+        distance[index] = field
+        route[index] = _descend(field, allowed)
+    return distance, route
+
+
+def _solve(allowed: np.ndarray, cell_m: float, row: int, column: int) -> np.ndarray:
+    """Return geodesic distance from one cell over one mask, by Dijkstra.
+
+    Parameters
+    ----------
+    allowed : ndarray
+        Boolean, True where a vehicle may be.
+    cell_m : float
+        Cell size in metres.
+    row, column : int
+        The source cell, snapped to the nearest allowed cell if it is outside.
+
+    Returns
+    -------
+    ndarray
+        Distance in metres, infinite where unreachable.
+    """
+    rows, columns = allowed.shape
+    # Nodes are the allowed cells only. Over the whole box the graph would be
+    # 1.4 M nodes and 11 M edges; on the water alone it is a little over half
+    # that, which is the difference between comfortable and not.
+    order = np.full(allowed.size, -1, dtype=np.int64)
+    flat = np.flatnonzero(allowed.reshape(-1))
+    order[flat] = np.arange(flat.size)
+    node = order.reshape(rows, columns)
+
+    sources, targets, lengths = [], [], []
+    for dy, dx, span in _STEPS:
+        y0, y1 = max(0, -dy), rows - max(0, dy)
+        x0, x1 = max(0, -dx), columns - max(0, dx)
+        here = node[y0:y1, x0:x1]
+        there = node[y0 + dy : y1 + dy, x0 + dx : x1 + dx]
+        both = (here >= 0) & (there >= 0)
+        sources.append(here[both])
+        targets.append(there[both])
+        lengths.append(np.full(int(both.sum()), span * cell_m, dtype=np.float32))
+    graph = csr_matrix(
+        (np.concatenate(lengths), (np.concatenate(sources), np.concatenate(targets))),
+        shape=(flat.size, flat.size),
+    )
+
+    if not allowed[row, column]:
+        reachable = np.argwhere(allowed)
+        gap = np.hypot(reachable[:, 0] - row, reachable[:, 1] - column)
+        row, column = (int(value) for value in reachable[int(np.argmin(gap))])
+    spread = dijkstra(graph, directed=False, indices=int(node[row, column]))
+    field = np.full(allowed.size, np.inf)
+    field[flat] = spread
+    return np.asarray(field.reshape(rows, columns))
+
+
+def _fill_from_reachable(
+    distance: np.ndarray, route: np.ndarray, reachable: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extend both fields over land, from the nearest cell that has a route.
+
+    Both fields are read back bilinearly, over a two-by-two stencil that
+    straddles the waterline wherever a vehicle is near one. Left as they come
+    out of the solver, land carries an infinity and a zero vector, so a
+    vehicle a single cell off the shore interpolates its distance home against
+    four hundred kilometres and is recalled on the spot, and its course home
+    shrinks towards nothing and comes out of the normalisation pointing
+    anywhere.
+
+    Filling each hole from the nearest cell that does have a route makes the
+    rasters smooth across the waterline while changing nothing a vehicle can
+    read: a vehicle is always in navigable water, which ``push_offshore``
+    guarantees, so the value under it is the solved one either way.
+
+    Parameters
+    ----------
+    distance : ndarray
+        ``(bases, rows, columns)``, infinite where unsolved.
+    route : ndarray
+        ``(bases, rows, columns, 2)``, zero where unsolved.
+    reachable : ndarray
+        Boolean, ``(bases, rows, columns)``, True where a route was found.
+
+    Returns
+    -------
+    tuple of ndarray
+        The two fields, defined everywhere.
+    """
+    filled_distance = np.array(distance)
+    filled_route = np.array(route)
+    for index in range(distance.shape[0]):
+        holes = ~reachable[index]
+        if not holes.any():
+            continue
+        rows, columns = ndimage.distance_transform_edt(
+            holes, return_distances=False, return_indices=True
+        )
+        filled_distance[index] = distance[index][rows, columns]
+        filled_route[index] = route[index][rows, columns]
+    return filled_distance, filled_route
+
+
+def _descend(field: np.ndarray, allowed: np.ndarray) -> np.ndarray:
+    """Return the smoothed unit direction that walks ``field`` downhill.
+
+    Parameters
+    ----------
+    field : ndarray
+        Geodesic distance, infinite where unreachable.
+    allowed : ndarray
+        Boolean, True where a vehicle may be.
+
+    Returns
+    -------
+    ndarray
+        East and north components, ``(rows, columns, 2)``, zero where there is
+        nowhere to go.
+    """
+    rows, columns = field.shape
+    best = np.array(field, dtype=np.float64)
+    step = np.zeros((rows, columns, 2))
+    for dy, dx, _ in _STEPS:
+        shifted = np.full_like(best, np.inf)
+        y0, y1 = max(0, -dy), rows - max(0, dy)
+        x0, x1 = max(0, -dx), columns - max(0, dx)
+        shifted[y0:y1, x0:x1] = field[y0 + dy : y1 + dy, x0 + dx : x1 + dx]
+        # Strictly better, so a plateau never sets a direction and the berth
+        # cell itself -- the one minimum of the field -- keeps a zero.
+        better = shifted < best
+        best = np.where(better, shifted, best)
+        span = math.hypot(dy, dx)
+        step[..., 0] = np.where(better, dx / span, step[..., 0])
+        step[..., 1] = np.where(better, dy / span, step[..., 1])
+
+    live = allowed & np.isfinite(field)
+
+    def normalise(vectors: np.ndarray) -> np.ndarray:
+        span = np.hypot(vectors[..., 0], vectors[..., 1])[..., None]
+        return np.divide(vectors, span, out=np.zeros_like(vectors), where=span > 1e-9)
+
+    raw = normalise(step)
+    smoothed = np.array(step)
+    weight = live.astype(np.float64)
+    for _ in range(HOME_SMOOTH_PASSES):
+        mass = ndimage.uniform_filter(weight, size=3, mode="nearest")
+        for axis in (0, 1):
+            smoothed[..., axis] = np.divide(
+                ndimage.uniform_filter(smoothed[..., axis] * weight, size=3, mode="nearest"),
+                mass,
+                out=np.zeros_like(mass),
+                where=mass > 0.0,
+            )
+    smoothed = normalise(smoothed)
+
+    # Check the smoothing, cell by cell, and keep only what survives.
+    #
+    # A smoothed course is a mixture of descent directions, which is usually a
+    # descent direction and is not always one. In a channel a cell or two wide
+    # the mixture points at the bank, and a vehicle following it grinds: one of
+    # 192 sat 17.5 km from its mooring making 0.02 m/s of a 1.2 m/s cruise,
+    # nominally "returning", until the battery went. It is not a margin
+    # problem -- raising the slack to 1.5 did not save it -- it is a route that
+    # does not go anywhere.
+    #
+    # So the stored course has to lead somewhere: one cell along it must be
+    # legal water with a strictly smaller distance to the berth. Where the
+    # smoothed course fails that, the raw eight-neighbour descent is kept,
+    # staircase and all, because a staircase that gets home beats a smooth
+    # curve that does not.
+    rows_index, columns_index = np.mgrid[0:rows, 0:columns]
+    ahead_x = np.clip(np.round(columns_index + smoothed[..., 0]).astype(int), 0, columns - 1)
+    ahead_y = np.clip(np.round(rows_index + smoothed[..., 1]).astype(int), 0, rows - 1)
+    downhill = live[ahead_y, ahead_x] & (field[ahead_y, ahead_x] < field)
+    unit = np.where(downhill[..., None], smoothed, raw)
+    return np.where(live[..., None], unit, 0.0)
 
 
 def _fetch(bounds: tuple[float, float, float, float], cache: Path) -> np.ndarray:
@@ -374,6 +618,102 @@ def main() -> None:
         f" navigable, worst displacement {float(travel.max()) / 1e3:.1f} km"
     )
 
+    # The way home, solved on the water the projection will actually leave a
+    # vehicle on -- which is not the same mask everywhere.
+    #
+    # Out in the gulf it is the keel clearance, eroded. Inside the approach to
+    # its own base a vehicle may come into shallow water, because that is what
+    # a base is for, and `push_offshore` relaxes to the berthing clearance
+    # there. Solving on the open-sea mask alone put the field's minimum 2.5 km
+    # from the Naissaar mooring -- the solver snapped the berth out to the
+    # nearest deep cell -- so the route led the fleet to a point near the base
+    # instead of to the base, and eight vehicles of 192 sat 1.95 km off it
+    # until the battery went. The mask has to say what the projection says.
+    berths = []
+    masks = []
+    grid_y, grid_x = np.mgrid[0:rows, 0:columns]
+    berthable = ndimage.binary_erosion(
+        distance >= berth_clearance_m, structure=np.ones((3, 3), dtype=bool)
+    )
+    for base in world["bases"]:
+        berth_x, berth_y = forward.transform(base["lon"], base["lat"])
+        berth_row = int(np.clip((berth_y - origin[1]) / cell_m, 0, rows - 1))
+        berth_column = int(np.clip((berth_x - origin[0]) / cell_m, 0, columns - 1))
+        berths.append((berth_row, berth_column))
+        # WHERE, not OR. Inside its own approach the berthing rule REPLACES the
+        # keel rule -- `push_offshore` asks for clearance off the quay there and
+        # stops asking about depth. Taking the union instead let the route
+        # thread cells that are deep but within 400 m of the shore, which the
+        # projection then refuses: a vehicle following such a route arrived
+        # 1.97 km from its mooring, was pinned by the clearance it had been
+        # routed into, and sat there for eight hours until the battery went.
+        # Fourteen of 192 went that way. A route is only a route if the mask
+        # that drew it is the mask that will be enforced on it.
+        inside = np.hypot(grid_y - berth_row, grid_x - berth_column) * cell_m <= float(
+            world["fleet"]["base_approach_m"]
+        )
+        masks.append(np.where(inside, berthable, usable))
+    home_distance, home_route = _ways_home(masks, cell_m, berths)
+
+    straight = np.zeros_like(home_distance)
+    grid_y, grid_x = np.mgrid[0:rows, 0:columns]
+    for index, (berth_row, berth_column) in enumerate(berths):
+        straight[index] = np.hypot(grid_y - berth_row, grid_x - berth_column) * cell_m
+    for index, base in enumerate(world["bases"]):
+        reached = masks[index] & np.isfinite(home_distance[index])
+        detour = home_distance[index][reached] / np.maximum(straight[index][reached], cell_m)
+        sink = np.unravel_index(int(np.argmin(home_distance[index])), home_distance[index].shape)
+        off = np.hypot(sink[0] - berths[index][0], sink[1] - berths[index][1]) * cell_m
+        print(
+            f"  way home        {base['name']}: {100 * reached.sum() / masks[index].sum():.1f} %"
+            f" of navigable water reaches it, detour median {np.median(detour):.2f}x,"
+            f" 95th {np.percentile(detour, 95):.2f}x, worst {detour.max():.2f}x,"
+            f" field minimum {off:.0f} m off the berth"
+        )
+
+    solved = np.stack(masks) & np.isfinite(home_distance)
+
+    # A pocket of navigable water with no route home is worse than shallow
+    # water, and the fill below is what makes it dangerous rather than merely
+    # useless: an unreachable cell inherits the distance AND the course of the
+    # nearest cell that does have a route, so it stops being distinguishable
+    # from a routed one. A vehicle reads a plausible course, that course
+    # crosses the bank, and it grinds there until the battery goes -- 18.0 km
+    # of path for 0.3 km of progress, measured on vehicle 23 of a forty-vehicle
+    # episode, lost at 20.4 h.
+    #
+    # They exist because the router and the projection disagree about what a
+    # channel is: this grid is eroded and strided to 200 m, `push_offshore`
+    # runs at 100 m, so a vehicle can swim through a gap the router cannot see
+    # and then cannot be routed back out of it.
+    #
+    # Excluded from the water the projection will leave a vehicle on, so the
+    # vehicle is kept out instead of being rescued. Removing a cell that had no
+    # route cannot strand one that had: no route ever passed through it.
+    # Against the ROUTING masks and not against `navigable`: `navigable` is the
+    # raw keel rule, un-eroded, so differencing it against a solve run on the
+    # eroded mask condemns the whole one-cell shoreline band -- 4.2 % of the
+    # water, which the clearance rules already handle. What stands a vehicle up
+    # is a cell its own base's router was willing to put it in and cannot get
+    # it out of.
+    stranding = (np.stack(masks) & ~solved).any(axis=0)
+    navigable = navigable & ~stranding
+    escape_sea = _escape(navigable)
+    usable = ndimage.binary_erosion(navigable, structure=np.ones((3, 3), dtype=bool))
+    print(
+        f"  no route home   {int(stranding.sum()):,} cells excluded,"
+        f" {100 * stranding.sum() / max(int(np.stack(masks).any(axis=0).sum()), 1):.3f} %"
+        f" of routable water, in {int(ndimage.label(stranding)[1]):,} pockets"
+    )
+
+    home_distance, home_route = _fill_from_reachable(home_distance, home_route, solved)
+    home_distance_dam = np.clip(
+        np.nan_to_num(home_distance / HOME_QUANTUM_M, posinf=HOME_UNREACHABLE),
+        0,
+        HOME_UNREACHABLE,
+    )[:, ::HOME_STRIDE, ::HOME_STRIDE]
+    home_route_i8 = np.round(home_route * 127.0)[:, ::HOME_STRIDE, ::HOME_STRIDE]
+
     # Polylines are ragged, so they travel as one vertex array plus the offsets
     # that cut it up. npz has no ragged array and object arrays would pickle.
     lengths = np.array([len(ring) for ring in coast], dtype=np.int64)
@@ -397,6 +737,10 @@ def main() -> None:
         "sea_area_m2": sea_area_m2,
         "min_water_m": min_water_m,
         "berth_clearance_m": berth_clearance_m,
+        "home_stride": HOME_STRIDE,
+        "home_quantum_m": HOME_QUANTUM_M,
+        "home_unreachable": HOME_UNREACHABLE,
+        "bases": [base["name"] for base in world["bases"]],
     }
 
     DATA.mkdir(parents=True, exist_ok=True)
@@ -406,6 +750,8 @@ def main() -> None:
         coast_distance_m=distance_m.astype(np.int16),
         escape_sea=escape_sea,
         escape_berth=escape_berth,
+        home_distance_dam=home_distance_dam.astype(np.uint16),
+        home_route_i8=home_route_i8.astype(np.int8),
         coast_vertices=vertices.astype(np.float32),
         coast_offsets=offsets,
         metadata=np.array(json.dumps(metadata, indent=2)),
