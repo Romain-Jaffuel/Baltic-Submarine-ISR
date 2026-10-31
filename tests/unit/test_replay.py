@@ -61,6 +61,8 @@ def trace(resolved: Config) -> dict[str, np.ndarray]:
     alarmed[:, 0] = True
     alarmed[:, 1] = True
 
+    claim = np.full((FRAMES, VEHICLES), -1, dtype=np.int16)
+    claim[:, :2] = 0
     fog_rows, fog_cols = scene.fog_shape
     return {
         "times_s": (np.arange(FRAMES) * 60.0).astype(np.float32),
@@ -72,6 +74,10 @@ def trace(resolved: Config) -> dict[str, np.ndarray]:
         .astype(np.int8),
         "vehicle_energy": np.full((FRAMES, VEHICLES), 0.6, dtype=np.float32),
         "vehicle_reach_m": np.full((FRAMES, VEHICLES), 5_000.0, dtype=np.float32),
+        # Two vehicles hold the escort slot on vessel 0 and the rest hold none,
+        # so the highlight path is actually drawn. All -1 would exercise the
+        # empty branch and nothing else.
+        "vehicle_claim": claim,
         "track_xy": np.broadcast_to(middle, (FRAMES, TRACKS, 2)).astype(np.float32),
         "track_cov": cov,
         "track_known": known,
@@ -337,3 +343,54 @@ def test_the_film_is_sized_for_the_encoder(
     assert frames.shape[0] == 3
     assert frames.shape[1] % 16 == 0
     assert frames.shape[2] % 16 == 0
+
+
+def test_the_halo_marks_the_team_and_not_the_crowd(
+    resolved: Config, trace: dict[str, np.ndarray]
+) -> None:
+    """Being near a suspect is not being its escort, and the film must say so.
+
+    `_on_station` used to compute "within `shadow_radius_m` of something red",
+    which marks everybody in the water around a suspect. Five slots a vessel
+    are paid, so a drone queueing for a vacancy, or merely crossing, wore the
+    same halo as the escort: the film showed a mob where the fleet had tasked a
+    team, and that is what a viewer objected to.
+
+    Two vehicles are put at the same place, alongside the vessel. One holds the
+    slot and one does not. Nothing else about them differs, so geometry cannot
+    tell them apart and only the assignment can.
+    """
+    frames = trace["vehicle_xy"].shape[0]
+    local = {key: value.copy() for key, value in trace.items()}
+    vessel = local["vessel_xy"][:, 0, :]
+    local["vehicle_xy"][:, 0, :] = vessel
+    local["vehicle_xy"][:, 1, :] = vessel
+    local["vehicle_claim"][:, 0] = 0
+    local["vehicle_claim"][:, 1] = -1
+
+    drawing = Replay(resolved, local)
+    for frame in range(frames):
+        station = drawing._on_station(frame)
+        assert bool(station[0]), "the tasked escort is not marked"
+        assert not bool(station[1]), "a vehicle with no slot is marked as the escort"
+
+
+def test_a_slot_held_from_far_away_is_not_drawn_as_on_station(
+    resolved: Config, trace: dict[str, np.ndarray]
+) -> None:
+    """Holding the slot is necessary and not sufficient -- it must also be there.
+
+    Slots are granted out to `shadow_reach_m`, four times the paid radius, so
+    a vehicle can be tasked while still hours away. Marking it on station
+    would draw an escort beside a ship it has not reached, which is the
+    opposite error to the one above and just as misleading.
+    """
+    local = {key: value.copy() for key, value in trace.items()}
+    vessel = local["vessel_xy"][:, 0, :]
+    local["vehicle_xy"][:, 0, :] = vessel + np.array(
+        [resolved.reward.shadow_radius_m * 2.0, 0.0], dtype=np.float32
+    )
+    local["vehicle_claim"][:, 0] = 0
+
+    drawing = Replay(resolved, local)
+    assert not bool(drawing._on_station(0)[0]), "an escort still inbound is drawn on station"

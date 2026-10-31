@@ -57,30 +57,60 @@ environment:
 # usable sea area to within 1.3 % of the truth, which was lucky, and put the
 # Helsinki archipelago nowhere, which was not.
 
-# Charging points in the port approaches. Each sits on the nearest water that
-# is BOTH deep enough for the fleet and part of the open gulf, found on the
-# terrain model rather than nudged by hand.
+# Forward moorings off two islands, not berths in two capitals.
 #
-# The second half of that is not pedantry, it is the whole thing. At the
-# fifteen metres the fleet needs under its keel, the basin off Helsinki is a
-# pocket of its own: the archipelago closes it off, and it is one of 282
-# disconnected pieces of navigable water in this box. A base placed in it is a
-# base no vehicle can reach. Thirty of forty were lost per episode, grinding
-# against the islands until the battery went -- against none in the
-# two-polyline world, where there was nothing to grind against.
+# A port approach is the worst place to keep a vehicle whose job is in the
+# middle of the channel. It is the far end of every sortie, it is where the
+# archipelago is densest, and it is thirty kilometres from the cables. Islands
+# in the channel are what a real deployment would use, and the two obvious
+# ones are already in this file for other reasons: Isosaari is the outermost
+# fort island of the Helsinki approach, and Naissaar is the island the ferry
+# lane has to steer around.
 #
-# So the test is connectivity, not proximity, and the correction is small once
-# it is the right correction: Helsinki moves 1.0 km east onto the open side of
-# the archipelago, Tallinn 100 m. Measured from here, the navigable way home
-# is 1.08x the straight line at Helsinki and 1.12x at Tallinn, against 1.39x
-# and a 95th percentile of 4.0x before.
+# Naissaar earns its place twice. At longitude 24.550 the mooring sits almost
+# exactly on EstLink 1, which runs down 24.55 from end to end -- so the
+# southern half of the fleet now launches onto the asset it is paid to watch
+# instead of transiting to it.
+#
+# Each position is the nearest water to the island that is deep enough, clear
+# of the shore by the berthing clearance, AND part of the open gulf, found on
+# the terrain model rather than nudged by hand. That last condition is not
+# pedantry, it is the whole thing: at the keel clearance the fleet needs, this
+# box holds 309 disconnected pieces of navigable water, 99.5 % of it in one
+# piece and the rest in pockets the archipelago closes off. A base in a pocket
+# is a base no vehicle can reach, and thirty of forty were lost per episode
+# grinding against the islands until the battery went.
+#
+# Measured at these two: 16.4 m of water 680 m off Isosaari, 16.0 m 1.95 km
+# off Naissaar, against 17.7 and 16.9 at the quays they replace.
+#
+# A THIRD base, off Vergi on the Estonian shore of Lahemaa, and it is there to
+# fix a measured failure rather than to round the map out. The eastern sixth of
+# the cable network was being abandoned: a mean gap of 25.7 h between visits
+# against 0.0 h for the middle, 39 visits against 1 083, and 21 of 223 samples
+# never visited at all in 48 h. The far end of EstLink 2 is 65 km from
+# Isosaari and 94 km from Naissaar, so the round trip is better than a day of
+# cruise while the discount horizon at gamma 0.95 and 900 s decisions is about
+# five hours -- 0.95^144 is 0.0006, so the reward waiting there was multiplied
+# by six ten-thousandths before the value function saw it. Squaring the cable
+# credit was tried to compensate and it did not work, and it put the policy
+# below both floors on its own objective. No price fixes a horizon; only
+# moving the start of the journey does.
+#
+# Chosen from the bathymetry on the same rule as the other two rather than off
+# a chart: deepest water at least 400 m off a shore, nearest to the eastern end
+# of the cable run. 40.1 m of water 2.5 km off the Vergi peninsula, 24.4 km
+# from that end against 65.2 km for Isosaari -- 5.6 h of cruise instead of 15.
 bases:
-  - name: helsinki
-    lon: 24.9707
-    lat: 60.1243
-  - name: tallinn
-    lon: 24.7517
-    lat: 59.4533
+  - name: isosaari
+    lon: 25.0562
+    lat: 60.1094
+  - name: naissaar
+    lon: 24.5503
+    lat: 59.5790
+  - name: vergi
+    lon: 26.0518
+    lat: 59.6391
 
 # Navigation lanes. Without these nothing is predictable and the task collapses
 # into plain area search.
@@ -255,7 +285,18 @@ reward:
   # a driver -- a reward dominated by a rare event is the worst case for PPO,
   # and the dense signal is the gate of C-10-03.
   alarm: 3.0
-  staleness: 0.18
+  # 1.5, up from 0.18, and this is the term that bears on "no deviation
+  # missed". The fleet is not short of coverage: never_detected is 0.020, so
+  # it hears 98 % of all vessels at some point in an episode. What it is short
+  # of is REVISITS -- expired_fraction is 0.841, so five tracks in six go stale
+  # with nobody going back, and a deviation that lasts three hours falls
+  # between visits. The alarm delay says the same thing from the other side:
+  # a median of 11 min once somebody is there, a p90 of 1.6 h.
+  #
+  # At 0.18 the whole term was worth 0.15 of a 1.94 decision, and halving the
+  # expired share would have gained 0.08. Nothing works for that. At 1.5 the
+  # same halving is worth 0.63, which is a reason to turn round.
+  staleness: 1.5
   exploration: 0.3
   # 24, not 0.5. A decision spent sprinting burns 4.2 % of the battery, which
   # now costs 1.01 against a mean decision worth 1.37 -- so the speed-endurance
@@ -274,6 +315,20 @@ reward:
   # touching this sent it back to 50 %. Shaping cannot fix that -- it is
   # policy-invariant by construction, so it helps the policy FIND the optimum
   # and cannot move it. This is the dial; the shaping is the torch.
+  # 4.4, and 9.0 was tried on the theory that a tighter cable patrol would
+  # hear every deviation -- every one of the six on the film seed happens
+  # within 3.56 km of a cable, well inside the 5.5 km a vehicle hears. It did
+  # not work and the reason is worth keeping: the credit is LINEAR in the
+  # staleness it clears, so the total collectable over an episode is the same
+  # whatever the cadence, and a long cadence collects it in fewer trips.
+  # Doubling the price doubles both sides and changes nothing. Measured,
+  # exposure went 6.56 h to 6.59 h while the missed rate got worse.
+  #
+  # Tightening the cadence needs a term that is not linear in age -- a penalty
+  # for samples past a deadline, alongside this one rather than instead of it,
+  # since capping THIS one would make every overdue sample worth the same and
+  # send the fleet to the nearest one, abandoning the far end of EstLink 2.
+  # Not built; recorded so the next attempt does not repeat this one.
   cable: 4.4
   cable_horizon_s: 21600.0
   # Pay once for work done once. Measured on the first trained policy: 66 % of
@@ -288,6 +343,250 @@ reward:
   # moving the optimum, which raising gamma would not guarantee.
   cable_shaping: 10.0
   shaping_discount: 0.95
+  # Holding contact once a vessel has been flagged. Everything above pays for
+  # FINDING: a verification is a one-off and an alarm is paid at the instant of
+  # the catch, so a vehicle that found a vessel loitering over EstLink 1 was
+  # paid to leave it and go earn the next verification. Nothing in the reward
+  # asked it to stay, which is a strange gap in a project named after holding
+  # contact.
+  #
+  # 14, down from 18, and the climb to 18 was a mistake worth recording. At 18
+  # this one term was paying 0.785 of a mean decision worth 1.736 -- 45 % of the
+  # fleet's entire income -- and the fleet did exactly what that asks: it
+  # abandoned the cables for it, and cable exposure went from 6.17 h back up to
+  # 9.55 h, level with the scripted patrol it is supposed to beat.
+  #
+  # Three things changed together and all three cut the payout, so the weight
+  # comes down with them. The credit is now paid for ONE vessel instead of
+  # summed over every vessel in range; only the nearest shadow_team are paid at
+  # all; and the verdict it is paid on is a far narrower one.
+  #
+  # 8, down from 14, because the split changed underneath it. The credit is now
+  # SHARED among the vehicles on the vessel instead of divided by the constant
+  # cap, so a lone escort takes five times what it used to and the weight has
+  # to come down to match. On station at half the radius: alone 4.00 a decision,
+  # at three 1.33 each, at five 0.80 -- against a mean decision worth about
+  # 1.41. So one vehicle much prefers to be there, a third still gains, and the
+  # fifth is below what patrolling pays and does not come. The escort size is
+  # set by arithmetic rather than by a cap.
+  # 8, and 24 was tried and is worse where it counts. Tripling the weight
+  # moved no headline metric -- exposure 6.30 to 6.56 h, missed 0.573 to
+  # 0.604 -- while on the film it took the fleet from five of six deviations
+  # well covered to three. One vessel stopped being HEARD at all, closest
+  # approach 9.7 km against a 5.5 km detection range: the fleet concentrated
+  # on the suspects it already knew about and opened a hole where the next one
+  # surfaced. An escort weight buys attention to contacts already found, and
+  # it buys it out of the search that finds them.
+  # 4.0, halved, because the split underneath it went away: each of the five
+  # now collects the full ramp instead of a fifth of it, so the pull on one
+  # vessel is five times what it was at the same weight. Glued alongside a
+  # vehicle takes 4.00 against a mean decision worth about 0.87, at 1.5 km it
+  # takes 1.00, and at 2.5 km 0.11 -- so coming the last kilometre is worth
+  # more than the whole approach before it, and the fifth to arrive is paid
+  # exactly what the first is.
+  #
+  # 16.0, and this time the weight is bought rather than guessed. The method:
+  # record two trajectories, the policy's own and a pure-pursuit override that
+  # hugs the suspect and otherwise leaves the policy alone, then score candidate
+  # payments arithmetically over both. The payment does not feed back into the
+  # dynamics within a recorded run, so this prices a reward change without
+  # spending a training run on it.
+  #
+  # What it showed. At 4.0 the desired behaviour EARNS LESS than the behaviour
+  # complained about: pursuit gives median dwell 120 min against 75, closest
+  # approach 0.40 km against 1.47 and leaves-while-red 41 % against 63, for
+  # -0.014 of fleet reward. No shape fixes that at a constant level -- the best
+  # of eleven profiles managed +0.046, where training moves fleet reward 0.39
+  # over 250 updates. Escorting a validated suspect simply has to be worth more
+  # than it was, which is the call already made: the cables are the secondary
+  # mission.
+  #
+  # At 16 with the 700 m core, pursuit wins by +0.225 and the term stays honest
+  # at the edge -- 0.71 at 2 km against the 0.88 cable patrol pays. The term
+  # breakdown it is answering, per decision on station: escort +0.379 for
+  # hugging against -0.205 of fuel and -0.156 of cable credit given up, so the
+  # escort had to clear about 0.47 and was clearing 0.38.
+  shadow: 16.0
+  # See src/baltic_isr/learn/env.py for why this is an exponential core and not
+  # the squared ramp it replaces. 700 m: of the lengths tried it is the
+  # shortest whose rim payment still falls below cable patrol while a 300 m
+  # station pays 10.35, and the margin over the policy, +0.225, is the second
+  # widest of eleven candidates. 500 m concentrates harder and wins less,
+  # because the trajectory spends too little time that close for the money to
+  # land; 1000 m pays 1.08 at the rim, above cable patrol, which reopens the
+  # wide circle.
+  shadow_hug_m: 700.0
+  # No longer a gate on the verdict, only the scale the observation's staleness
+  # feature is measured in. It WAS a gate, and that one line is why no fleet
+  # ever converged on anything: 900 s of verdict buys 1.08 km of travel, while
+  # the nearest deployed vehicle to a new deviation is 22.8 km away. Measured
+  # over 22 real deviations, the flag died twenty decisions before anyone could
+  # arrive, so the only vehicles it could ever pay were the ones already there
+  # -- and sitting where suspects appear is the correct policy for that reward.
+  #
+  # A confirmed verdict is now permanent: a vessel caught loitering over a
+  # cable stays a target for the rest of the episode. It costs nothing on the
+  # wire, since the bit was already in the packet, and it is what makes a 4 km
+  # modem sufficient -- the finder keeps the verdict and hands it to the first
+  # vehicle it meets, which matters because 64 % of deviations are found with
+  # nobody in radio range at all.
+  #
+  # The verdict it gates is no longer `~plausible`. That predicate fires on
+  # ordinary moving traffic: on ground truth it flagged 4 263 vessel-frames at
+  # 25.2 % precision, and through the detector 8.3 %. A predicate that fires on
+  # moving traffic cannot express "escort this ship", because standing still
+  # where ships pass satisfies it better than following one does -- and that is
+  # what the fleet learned to do. It is now `loitering AND over_corridor`:
+  # 1 969 vessel-frames at 43.4 % precision for 79.1 % of the recall, and,
+  # more to the point, the contacts it designates are STOPPED. Proximity to a
+  # stopped vessel is an escort; proximity to a lane is a parking space.
+  #
+  # 21 600 s, six hours, and at 900 it was actively breaking the design it is
+  # left over from. The observation's staleness feature is `age / this`, clamped
+  # to one. With a perishable verdict no suspect was ever older than 900 s and
+  # the feature spanned its whole range; with a permanent one almost every age
+  # exceeds 900 s, so the feature pinned at 1.0 and carried no information at
+  # all. The policy could not tell a contact seen twenty minutes ago from one
+  # seen ten hours ago, which is exactly the number it needs to decide whether
+  # setting off is worth a decision. Six hours is the scale the presence grid
+  # already ages on, so the two features read alike.
+  shadow_memory_s: 21600.0
+  # 3 km, half a cruise detection range rather than all of it. At 6 km the
+  # paid radius WAS the hearing radius, so a vehicle collected full marks for
+  # sitting anywhere it could hear the vessel from -- and on the film that is
+  # what it looks like: drones loitering inside a wide circle rather than
+  # closing on the ship. The credit still ramps linearly to zero at the edge,
+  # so halving the radius doubles what a metre of closing is worth and a
+  # vehicle has to come to the middle to be paid properly.
+  #
+  # It is now the ENGAGEMENT radius rather than the payment scale: who counts
+  # as on station, who is ranked against the team cap, and where the credit
+  # reaches zero. What a metre of closing is worth is set by `shadow_hug_m`,
+  # because shrinking this radius turned out to be the wrong dial -- it moves
+  # the whole profile inward, so vehicles outside the new radius are paid
+  # nothing at all and the approach loses its gradient.
+  #
+  # It stays well inside the 5.95 km a vehicle hears at cruise, which is the
+  # constraint that mattered: the credit must not ask for a station the
+  # vehicle cannot hold contact from.
+  shadow_radius_m: 3000.0
+  # The ceiling on who can be paid for one contact, not a target. Operationally
+  # a mob is wrong and on the film it is unreadable -- the viewer has to be
+  # able to count the drones that peel off. Five are paid at most; the sixth
+  # earns nothing rather than a little less, and is not pulled towards the
+  # vessel either, since the shaping reads the same cap.
+  #
+  # What actually holds the escort to one-to-three is the SHARE, not this
+  # number: see `shadow`. Divided by this constant the fifth arrival collected
+  # exactly what the first did, so the cap was the only thing holding the pile
+  # down and five was simply the size of the pile.
+  shadow_team: 5
+  # Shaping toward the suspect. Same tool as cable_shaping and the same reason:
+  # the thing being paid for is out of sight of the value function. Measured
+  # with shadow alone, the fleet flagged a live suspect in 118 of 137 decisions
+  # and had nobody inside the radius 97.6 % of the time -- not because the
+  # payment was too small but because it was unreachable. A deviation lasts
+  # three hours and cruise covers 13 km in three, so a vehicle 20 km out
+  # arrives after it is over, and every decision on the way there pays nothing.
+  #
+  # The potential is exp(-d/shadow_reach_m), not a linear ramp, and that is the
+  # load-bearing part. Shaping pays k*(discount*phi' - phi), which is positive
+  # only while discount*dphi > (1-discount)*phi. A linear ramp holds dphi
+  # constant while phi grows, so closing stops paying at 9.5 km -- and from
+  # there to the 6 km radius every decision spent closing was a LOSS. The fleet
+  # would have been nudged into a ring and held outside the range it was being
+  # paid to enter. Exponentially, the condition becomes reach < step/ln(1/
+  # discount) with no distance in it: 21 km at 900 s of cruise and 0.95, so
+  # 12 km sits well inside the bound and the gradient is positive at every
+  # range.
+  #
+  # 12 km is also near the best available pull at the range that matters. The
+  # per-decision gain is phi*(discount*e^(step/reach) - 1), which at 22.8 km
+  # peaks around a 10-12 km length scale: 0.0059 at 12 km against 0.0039 at
+  # 16 km and 0.0031 at 6 km. Longer is not better -- it flattens the potential
+  # until closing earns nothing.
+  #
+  # 25, back up from 6, and the reason the spikes no longer argue against it is
+  # that the verdict latches. The potential is a function of the BELIEF, and the
+  # cost of a large k was the lurch when a verdict arrived or went stale: a
+  # suspect appearing at 3 km took phi from 0 to 0.78 in one decision, a one-off
+  # +22 against a mean reward of 1.7, and a symmetric -23 fifteen minutes later
+  # when it expired. Permanent verdicts remove the second half entirely and most
+  # of the first: each vessel crosses into the flagged set once per episode
+  # rather than flickering every decision, so there are a handful of arrivals
+  # instead of hundreds.
+  #
+  # And k has to be large now, because the distance it has to pull across is
+  # 22.8 km rather than 3. At that range one decision of closing moves the
+  # potential by 0.0059, so at k = 6 a vehicle was offered 0.035 to give up a
+  # decision worth 1.41. It declined, correctly. At 25 it is offered 0.15 a
+  # decision all the way in, which is what buys the five hours of transit.
+
+  # 10, down from 25, because of what shaping costs a vehicle that has
+  # ARRIVED. The potential is bounded by one, so holding station pays
+  # k*(gamma-1)*phi every decision -- a flat -1.25 at k = 25, levied for
+  # exactly the behaviour being asked for. It cannot change the optimum, which
+  # is why it was safe to raise; it can and does make holding look worse than
+  # it is to a value function still learning, and that is the complaint. At 10
+  # the drag is -0.50 against an escort credit of 4.00 when alongside.
+  shadow_shaping: 10.0
+  # How slow a watch-listed vessel must look before the escort is paid to sit
+  # on it, by the vehicle's own believed velocity. See config.py: the verdict
+  # is permanent, so this is what separates a watch list from a target list.
+  # Measured, 86 of 180 vessels finish an episode watch-listed, and ungated the
+  # credit was collected beside traffic making 6.02 m/s 98 % of the time --
+  # 0.4 % precision, which is what `alarmed` was thrown out for. At 1.0 m/s the
+  # precision is 78.1 % for exactly the same 48.1 % recall. A vehicle cruises
+  # at 1.2 m/s, so anything faster is not escortable in the first place.
+  shadow_slow_ms: 1.0
+  shadow_reach_m: 12000.0
+  # What standing in a suspect's circle costs a vehicle that is escorting
+  # nothing there. The team cap stops the sixth vehicle being PAID; it does not
+  # stop it waiting for a vacancy, and the film showed eleven drones round a
+  # vessel at the ninetieth percentile while five worked.
+  #
+  # Priced on two recorded seeds, 477 waits: the discounted edge of queueing
+  # over returning to patrol is +1.66 unpriced and crosses zero at a charge of
+  # 0.35 a decision -- the same figure on both seeds. 1.0 is a threefold margin
+  # on that, lands on 4.4 % of deployed vehicle-decisions, and is a tenth of the
+  # 10.35 that being alongside pays, so it cannot reach the escort.
+  #
+  # Charging the wait rather than cutting `shadow`: the prize is multiplied by
+  # a 135-minute held spell and the wait is four decisions, so the weight would
+  # have to fall far enough to loosen the hug before the arithmetic turned.
+  # This term touches only vehicles with no claim.
+  shadow_crowding: 1.0
+  # 0.25 a hull beyond the fifth inside 3 km, and the three numbers are
+  # measured rather than chosen.
+  #
+  # 3 km: the modem reaches 6 km, so this charge can never cost a relay. Two
+  # vehicles at 3.1 km pay nothing and still hear each other. The acoustic
+  # link is worth having; sharing the same square of water is not.
+  #
+  # 5: the paid escort team. Beyond it the sixth hull is surplus by the
+  # reward's own definition, so the fleet may assemble one full escort
+  # anywhere it likes and is charged for the next arrival.
+  #
+  # 0.25: priced against what the vehicles in a pile are actually earning. A
+  # held escort slot pays 4.29 a decision. In the worst pile on record -- 13
+  # neighbours -- it is charged 8 x 0.25 = 2.0 and still nets +2.3, so the
+  # real team holds. A vehicle with no claim in that same pile pays the 1.0
+  # of `shadow_crowding` on top, 3.0 in all, against 0.84 for going back on
+  # patrol, so it leaves. The charge sorts the pile by what each hull is
+  # worth there instead of by rank.
+  #
+  # It fires on 8.1 % of deployed vehicle-instants in the recorded episode.
+  #
+  # A vehicle holding an escort claim is exempt, and that exemption was bought
+  # with a failed run rather than reasoned out. Charging the whole knot thinned
+  # it beautifully -- piles of eleven or more vanished outright -- while escort
+  # effort on a vessel that was really deviating fell from 83.3 % to 54.1 %.
+  # The charge had made a crowded real rover expensive and a lonely false
+  # positive free, so the fleet went to the lonely ones. Only the hulls that
+  # are not working in a pile are asked to leave it.
+  packing_weight: 0.25
+  packing_radius_m: 3000.0
+  packing_allowance: 5
 
 fleet:
   # Sized from the derived detection range AND the measured duty cycle, not
@@ -296,7 +595,19 @@ fleet:
   # 20 % of the water, the band where the problem is neither trivial nor
   # hopeless. The 20 of batch 1 assumed everyone was on station at once.
   # See docs/constants.md C-7-01 and C-8-02.
-  count: 40
+  # 50, which is a ceiling rather than a derivation: the fleet is not allowed
+  # to grow past it. It had reached 63 by the same reflex that took the
+  # deviation rate to 24 and the update budget to 800 -- every time the
+  # behaviour fell short, something went up. 63 was the honest answer to one
+  # question (a cable now counts as watched only when a vehicle covers its
+  # whole 3 km corridor, which halves what one hull holds, so 48 no longer
+  # covered the network) and the wrong answer to the real one, which is what
+  # this simulation is for. Fifty hulls guarding two cable systems is a figure
+  # a reader can weigh. Sixty-three was a number that bought back a metric.
+  #
+  # What it costs is recorded rather than hidden: cable exposure rises, because
+  # thirteen fewer hulls hold thirteen fewer corridors.
+  count: 50
   # "rotation": the fleet is already in sustained operation at t=0. Every
   # vehicle sits at a different point of its sortie cycle -- some on station,
   # some outbound, some coming home, some alongside charging -- so nothing is
@@ -304,14 +615,19 @@ fleet:
   # "cold": everyone at the quay at t=0. Kept as a contrast; it costs the first
   # nine hours and the last ten. See docs/constants.md C-8-01.
   start: rotation
-  # 8 km, not 1 km. A returning vehicle steers straight at its base, and in
-  # this archipelago a straight line is often blocked: measured, vehicles
-  # settled 6.4 km short and held that radius until the battery went, which
-  # cost thirty of forty per episode. Rather than give the fleet a pathfinder,
-  # the base counts as reached once the vehicle is in its approach -- which is
-  # what `base_approach_m` already describes. Crude, deliberately: the project
-  # is about the speed-endurance trade, not about harbour pilotage.
-  arrival_radius_m: 8000.0
+  # 1.5 km. This was 8 km, and the 8 km was a workaround: a vehicle steering
+  # the straight bearing at its base could not get closer than about 6.4 km
+  # through the islands, so "arrived" was widened until it covered the vehicles
+  # that were stuck. The fleet now has a pathfinder -- the geodesic route field
+  # of scripts/ingest_geodata.py -- and gets alongside at 1.13 m/s of a 1.2 m/s
+  # cruise, so the workaround can go.
+  #
+  # Which matters beyond tidiness, because arrival SNAPS the believed position
+  # to the berth while the vehicle stays where it is. At 8 km that wrote up to
+  # eight kilometres of navigation error in one tick, and the fleet's worst
+  # believed-position error was not a navigation measurement at all, it was
+  # this. At 1.5 km it is a harbour pilot's worth of slack.
+  arrival_radius_m: 1500.0
   # The shore. Expressed as the water the vehicle needs under it, not as a
   # setback from the waterline, and world.field converts the one into the other
   # through the same shelf the sonar uses. Fifteen metres lets a 3.5 m vehicle
@@ -325,11 +641,39 @@ fleet:
   # clearance band itself or nothing could cross it.
   berth_clearance_m: 400.0
   base_approach_m: 3000.0
-  # Six rather than three. Not physics -- the scenario is a choice -- but the
-  # demonstration needs enough red moments to read, and three of them fill four
-  # seconds of a sixty second film. See docs/constants.md C-11-02.
+  # Back to 6 from 24, and this entry is a record of why it should not have
+  # been 24.
+  #
+  # It was raised fourfold as a TRAINING-SIGNAL change: on-station pairs were
+  # 1.6 % of experience, PPO fits the advantage of a rare high-value state
+  # badly, and four times the deviations is four times the escort experience
+  # per update. The reasoning was sound and the side effect was not looked at.
+  # Twenty-four vessels loitering over four cables in forty-eight hours is not
+  # a sea anyone would recognise -- in the real Gulf of Finland a handful of
+  # incidents a YEAR is news -- and a demonstration that is not credible does
+  # not demonstrate anything, whatever its metrics say.
+  #
+  # The suspicion that it was also distorting the behaviour was tested and is
+  # WRONG, which is worth recording so it is not tested again. Of the
+  # deviations the fleet never reached: 70 % it had never classified at all,
+  # 30 % it had classified and nobody went, and the vehicles within reach were
+  # already busy on another vessel in 10 %. A missed contact is one nobody
+  # saw -- median 128 minutes to a first verdict against 45 for the ones that
+  # were reached -- not one abandoned for a better offer.
+  #
+  # The cost is real and is paid elsewhere: a quarter of the deviations is a
+  # quarter of the escort experience per update, so the update budget carries
+  # it (see scripts/train_decentralised.py).
   deviations_per_episode: 6
-  deviation_duration_s: 10800.0
+  # Six hours, up from three. A SCENARIO change and not a model improvement,
+  # so the missed rate either side of it is not a like-for-like comparison and
+  # is not quoted as one. The reason is the revisit arithmetic: the fleet hears
+  # 98 % of all vessels at some point, but five tracks in six expire with
+  # nobody going back, and a three-hour window falls between passes. On the
+  # bands of cable the fleet does patrol the mean gap is 0.0 to 4.4 h, so a six
+  # hour deviation is almost certainly seen there while a three hour one is a
+  # coin toss.
+  deviation_duration_s: 21600.0
   # Cable corridors are 15.7 % of the water. Firing every deviation over one
   # would hand the policy a free answer: camp on the cables and wait. Seven in
   # ten keeps the prior worth learning; the rest happen anywhere, so the fleet

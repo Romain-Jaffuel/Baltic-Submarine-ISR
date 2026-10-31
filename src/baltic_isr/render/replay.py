@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from matplotlib import patheffects as path_effects
+from matplotlib.collections import EllipseCollection
 from matplotlib.path import Path as MarkerPath
 
 from baltic_isr import geo
@@ -344,6 +345,7 @@ class Replay:
         self._assets = assets_module.build_assets(config)
         self._statics = statics_module.build(config, "cpu")
         self._on_cable_cache: dict[int, np.ndarray] = {}
+        self._on_station_cache: dict[int, np.ndarray] = {}
         self._cable_runs: list[tuple[np.ndarray, float]] | None = None
         self._exposure_table: np.ndarray | None = None
         self._colours: Palette = palette(mode)
@@ -357,6 +359,16 @@ class Replay:
     def frames(self) -> int:
         """Return how many frames the trace holds."""
         return int(self._trace["times_s"].shape[0])
+
+    @property
+    def vehicles(self) -> int:
+        """Return how many vehicles the trace holds.
+
+        Read off the trace rather than the config so the film's own title
+        cannot drift from the fleet it is showing. It said forty for a run of
+        sixty-three.
+        """
+        return int(self._trace["vehicle_xy"].shape[1])
 
     def links_at(self, frame: int) -> np.ndarray:
         """Return the acoustic pairs active on a frame."""
@@ -446,10 +458,22 @@ class Replay:
         # 4. the traffic, which is context and must stay context
         vessels = trace["vessel_xy"][frame]
         deviating = trace["vessel_deviating"][frame]
+        # **Red means a TARGET, not merely an oddity.** The escort is paid on
+        # `loitering AND over_corridor`, so a vessel idling in open water is
+        # not something the fleet owes anything to -- and painting it red made
+        # the film unreadable as a scoreboard. Measured on the last run: of 24
+        # deviating vessels, 7 were never over a corridor, three of them 3.2 to
+        # 9.7 km out, and every one of those showed as a red point that nobody
+        # went to. The fleet was right and the film was lying about it.
+        #
+        # So the mark now carries the same predicate the reward does. An
+        # open-water loiterer goes back to being traffic, which is what the
+        # model treats it as.
+        odd = deviating & self._on_cable(frame)
         if "traffic" in shown:
             axes.scatter(
-                vessels[~deviating, 0],
-                vessels[~deviating, 1],
+                vessels[~odd, 0],
+                vessels[~odd, 1],
                 s=VESSEL_SIZE,
                 marker=SHIP,
                 color=colours.traffic,
@@ -505,17 +529,10 @@ class Replay:
                 self._legend(axes)
             return
 
-        # **Red means one thing: a vessel that is not behaving.** It used to
-        # mean two, with amber for "odd, in open water" and red for "odd, over
-        # a cable" -- a distinction that is real in the metrics and invisible
-        # to anybody watching for the first time. Two marks for one idea is
-        # one mark too many, so the pair collapsed and amber went back to
-        # meaning exactly one thing of its own: a cable nobody is listening to.
-        #
         # The mark keeps the shape of what it is. Every vessel on this map is
         # a dot; a red one is a vessel in trouble. Changing the shape as well
-        # would say it is a different kind of object, and it is not.
-        odd = deviating
+        # would say it is a different kind of object, and it is not. `odd` is
+        # settled further up, where the traffic layer needs it too.
         if odd.any():
             # A glow under the dot. On a 138 km map a lone mark is four pixels
             # of fourteen hundred, and the eye has to be sent somewhere before
@@ -528,6 +545,28 @@ class Replay:
                 alpha=0.15,
                 linewidths=0,
                 zorder=11,
+            )
+            # The circle the escort is paid to be inside, drawn at the radius
+            # the reward actually uses. Without it there is nothing on screen
+            # to tell a drone sitting ON a vessel from one passing a few
+            # kilometres away: on a 137 km map three kilometres is twenty
+            # pixels, and the eye cannot measure twenty pixels against a glow.
+            # With it, "holding station" becomes a thing you can count.
+            radius = self._config.reward.shadow_radius_m
+            axes.add_collection(
+                EllipseCollection(
+                    np.full(int(odd.sum()), 2.0 * radius),
+                    np.full(int(odd.sum()), 2.0 * radius),
+                    np.zeros(int(odd.sum())),
+                    units="xy",
+                    offsets=vessels[odd],
+                    offset_transform=axes.transData,
+                    facecolors="none",
+                    edgecolors=colours.threat,
+                    linewidths=1.0,
+                    alpha=0.55,
+                    zorder=11,
+                )
             )
             axes.scatter(
                 vessels[odd, 0],
@@ -642,7 +681,11 @@ class Replay:
                 clip_on=True,
                 zorder=3,
             )
-        for (x, y), port in zip(scene.bases, ("Helsinki", "Tallinn"), strict=False):
+        # Named from the configuration, not from a tuple written here. The
+        # moorings moved off the capitals and onto two islands, and a hardcoded
+        # pair of port names survived the move by labelling the wrong places.
+        labels = [base.name.capitalize() for base in self._config.bases]
+        for (x, y), port in zip(scene.bases, labels, strict=False):
             axes.annotate(
                 port,
                 xy=(float(x), float(y)),
@@ -705,6 +748,36 @@ class Replay:
         if cached is None:
             cached = assets_module.over_a_cable(self._assets, self._trace["vessel_xy"][frame])
             self._on_cable_cache[frame] = cached
+        return cached
+
+    def _on_station(self, frame: int) -> np.ndarray:
+        """Return which vehicles are inside a target's escort radius, this frame.
+
+        Exactly the set the reward pays: a vehicle **holding the escort slot**
+        for a vessel, and inside that vessel's radius. Not "within 3 km of
+        something red", which is what this used to compute.
+
+        The difference is the whole of the crowding complaint. Five slots a
+        vessel are paid and the geometry marks everyone in the water around it,
+        so a drone queueing for a vacancy or merely crossing got the same halo
+        as the escort -- the film showed a mob where the fleet had tasked a
+        team. The assignment is recorded in the trace for this reason.
+
+        Read off the run rather than off any vehicle's belief, because the
+        viewer is being shown what happened, not what somebody thought.
+        """
+        cached = self._on_station_cache.get(frame)
+        if cached is None:
+            vessels = self._trace["vessel_xy"][frame]
+            position = self._trace["vehicle_xy"][frame]
+            claim = self._trace["vehicle_claim"][frame].astype(np.int64)
+            held = claim >= 0
+            if not held.any():
+                cached = np.zeros(position.shape[0], dtype=bool)
+            else:
+                gap = np.linalg.norm(position - vessels[claim.clip(0)], axis=1)
+                cached = held & (gap < self._config.reward.shadow_radius_m)
+            self._on_station_cache[frame] = cached
         return cached
 
     def _assets_layer(self, axes: Axes, frame: int) -> None:
@@ -865,8 +938,14 @@ class Replay:
         entries = [
             *cable,
             (dot(colours.traffic, 5.0), "Merchant vessel"),
-            (dot(colours.threat, 8.0, edge=colours.surface), "Suspicious vessel"),
+            # "Loitering over a cable" rather than "suspicious", because that
+            # is the predicate the mark now carries and the one the escort is
+            # paid on. A vessel idling in open water is odd and is not a
+            # target; calling the mark "suspicious" invited the film to be
+            # read as missing seven targets it was never given.
+            (dot(colours.threat, 8.0, edge=colours.surface), "Vessel loitering over a cable"),
             (dot(cruise, 7.0), "Submarine drone"),
+            (dot(colours.threat, 11.0), "Drone holding station on it"),
         ]
         legend = axes.legend(
             [handle for handle, _ in entries],
@@ -990,8 +1069,6 @@ class Replay:
         # identical, so they pull it there to say nothing. The layer earns its
         # place once a policy varies the regime, which is why `show_reach`
         # exists rather than deleting it.
-        from matplotlib.collections import EllipseCollection
-
         if self.show_reach and at_sea.any():
             axes.add_collection(
                 EllipseCollection(
@@ -1019,13 +1096,42 @@ class Replay:
                 zorder=8,
             )
 
+        # Who is holding station on a target, which the film could not show at
+        # all before. A halo under the mark, so an escort reads as a cluster of
+        # haloed drones inside the target's circle and can be counted at a
+        # glance -- the question being "are they ON it", and five identical
+        # arrowheads near a red dot do not answer it.
+        escorting = self._on_station(frame) & at_sea
+        if escorting.any():
+            axes.scatter(
+                position[escorting, 0],
+                position[escorting, 1],
+                s=VEHICLE_SIZE * 4.0,
+                color=colours.threat,
+                alpha=0.30,
+                linewidths=0,
+                zorder=7,
+            )
+
         for index in range(3):
             selected = at_sea & (regime == index)
             if not selected.any():
                 continue
-            span = TRAIL_FRAMES[index]
-            if span > 1 and frame >= span:
-                history = trace["vehicle_xy"][frame - span : frame + 1][:, selected]
+            # An escort gets the drift trail whatever regime it is in, and the
+            # split is per vehicle rather than per group. The trail length
+            # encodes the regime, which is right for a vehicle crossing the
+            # gulf and wrong for one orbiting a ship: at four minutes a film
+            # frame, twenty frames of cruise is 5.8 km of path wrapped around a
+            # 3 km circle, so a drone holding station drew a tangle
+            # indistinguishable from one driving through. Cutting it back is
+            # what makes station-keeping look like station-keeping.
+            for span, group in (
+                (TRAIL_FRAMES[index], selected & ~escorting),
+                (TRAIL_FRAMES[0], selected & escorting),
+            ):
+                if span <= 1 or frame < span or not group.any():
+                    continue
+                history = trace["vehicle_xy"][frame - span : frame + 1][:, group]
                 for lane in range(history.shape[1]):
                     axes.plot(
                         history[:, lane, 0],

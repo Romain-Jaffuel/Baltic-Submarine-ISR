@@ -151,7 +151,7 @@ def evaluate(
 
     share = regimes / regimes.sum().clamp_min(1.0)
     return Report(
-        name=scripted.__name__ if scripted is not None else "appris",
+        name=scripted.__name__ if scripted is not None else "learned",
         outcome=scorer.score(state),
         cable_exposure_h=exposure / decisions / 3600.0,
         drift_share=float(share[0]),
@@ -171,6 +171,8 @@ def train(
     log_every: int = 10,
     sees: str = "local",
     fleet_block: bool = False,
+    start: Decentralised | None = None,
+    budget_s: float | None = None,
 ) -> tuple[Decentralised, list[dict[str, float]]]:
     """Run PPO and return the policy and the training log.
 
@@ -201,6 +203,13 @@ def train(
     torch.manual_seed(seed)
     environment = Environment(config, worlds, device, sees=sees, oracle_fleet_block=fleet_block)
     policy = Decentralised(environment.observation_width).to(device)
+    # Warm start. The policy is per-vehicle and its observation width does not
+    # depend on how many hulls the fleet has, so a checkpoint trained at one
+    # fleet size continues at another. This is what makes an adjustment cost
+    # minutes instead of hours: the behaviour is already there and the run is
+    # only moving it, rather than finding it again from noise.
+    if start is not None:
+        policy.load_state_dict(start.state_dict())
     optimiser = torch.optim.Adam(policy.parameters(), lr=settings.learning_rate, eps=1e-5)
 
     decisions = int(config.simulation.episode_s / config.simulation.decision_interval_s)
@@ -229,13 +238,20 @@ def train(
             **losses,
         }
         log.append(record)
-        if (step + 1) % log_every == 0 or step == 0:
+        stop = budget_s is not None and record["seconds"] >= budget_s
+        if (step + 1) % log_every == 0 or step == 0 or stop:
             print(
-                f"  {step + 1:4d}/{updates}  {record['transitions'] / 1e6:5.2f} M pas  "
-                f"recompense {record['reward']:+.3f}  "
-                f"kl {record['kl']:+.4f}  entropie {record['entropy']:.3f}  "
+                f"  {step + 1:4d}/{updates}  {record['transitions'] / 1e6:5.2f} M steps  "
+                f"reward {record['reward']:+.3f}  "
+                f"kl {record['kl']:+.4f}  entropy {record['entropy']:.3f}  "
                 f"{record['seconds']:4.0f} s"
             )
+        # A wall-clock ceiling, because the budget is the thing that is
+        # actually scarce. `updates` becomes the cap and this becomes the
+        # deadline, so a run cannot quietly cost more than it was granted.
+        if stop:
+            print(f"  stopped on the {budget_s:.0f} s budget at update {step + 1}")
+            break
 
     return policy, log
 
@@ -253,9 +269,9 @@ def compare(
     """Score the learned policy and both floors on the same unseen seeds."""
     reports: list[Report] = []
     for name, learned, scripted in (
-        ("tondeuse", None, Lawnmower),
-        ("patrouille", None, CablePatrol),
-        ("appris", policy, None),
+        ("lawnmower", None, Lawnmower),
+        ("cable patrol", None, CablePatrol),
+        ("learned", policy, None),
     ):
         # The floors are scripted, so they always run on the local
         # environment; only the learned policy follows `sees`.
@@ -277,8 +293,8 @@ def compare(
 def table(reports: list[Report]) -> str:
     """Render the comparison the way the lot is judged."""
     header = (
-        f"{'politique':>12} {'exposition':>12} {'ratees':>8} {'carte':>7} "
-        f"{'fausses':>8} {'derive':>7} {'sprint':>7} {'recompense':>11}"
+        f"{'policy':>12} {'exposure':>12} {'missed':>8} {'picture':>7} "
+        f"{'false':>8} {'drift':>7} {'sprint':>7} {'reward':>11}"
     )
     lines = [header, "-" * len(header)]
     for item in reports:

@@ -52,6 +52,8 @@ def trace(resolved: Config) -> dict[str, np.ndarray]:
     cov = np.zeros((FRAMES, TRACKS, 3), dtype=np.float32)
     cov[:, :, 0] = cov[:, :, 2] = 500.0**2
 
+    claim = np.full((FRAMES, VEHICLES), -1, dtype=np.int16)
+    claim[:, :2] = 0
     rows, cols = build_scene(resolved).fog_shape
     return {
         "times_s": (np.arange(FRAMES) * 60.0).astype(np.float32),
@@ -61,6 +63,10 @@ def trace(resolved: Config) -> dict[str, np.ndarray]:
         "vehicle_regime": np.zeros((FRAMES, VEHICLES), dtype=np.int8),
         "vehicle_energy": np.full((FRAMES, VEHICLES), 0.6, dtype=np.float32),
         "vehicle_reach_m": np.full((FRAMES, VEHICLES), 5_000.0, dtype=np.float32),
+        # Two vehicles hold the escort slot on vessel 0 and the rest hold none,
+        # so the highlight path is actually drawn. All -1 would exercise the
+        # empty branch and nothing else.
+        "vehicle_claim": claim,
         "track_xy": np.broadcast_to(spot, (FRAMES, TRACKS, 2)).astype(np.float32),
         "track_cov": cov,
         "track_known": np.ones((FRAMES, TRACKS), dtype=bool),
@@ -119,13 +125,14 @@ def test_the_key_names_every_mark_the_map_draws() -> None:
 
     The map draws cables in two states, the crossings, vessels in two states,
     the vehicles with their hearing disc, and the ring for a contact in
-    question. Nine marks, eight entries -- the vehicle and its disc share a
-    row in the map and get one each here.
+    question. Nine entries since the escort halo joined them: a drone holding
+    station on a target is a mark of its own on screen, and the rule this test
+    exists to enforce is that every mark drawn has a name here.
     """
     colours = palette("light")
     entries = story.keys(colours)
     labels = [label for _, label in entries]
-    assert len(entries) == 8
+    assert len(entries) == 9
     assert len(set(labels)) == len(labels)
     assert all(label and not label.endswith(" ") for label in labels)
 
@@ -134,20 +141,30 @@ def test_the_key_names_every_mark_the_map_draws() -> None:
         assert needed in used, f"no key entry uses {needed}"
 
 
-def test_red_is_spent_on_one_thing_only() -> None:
-    """Amber and red used to both mean "odd". Now red does, and amber is cable.
+def test_red_is_spent_on_one_idea_only() -> None:
+    """Amber and red used to both mean "odd". Now red means the engagement.
 
     Two marks for one idea was one too many: the difference between odd and
     odd-over-a-cable is real in the metrics and invisible to a first-time
     viewer. Collapsing them freed amber to mean exactly one thing of its own.
+
+    Red now carries two marks and still one idea: the vessel loitering over a
+    cable, and a drone holding station ON that vessel. Sharing the colour is
+    the point -- it is what says the halo belongs to the ship rather than
+    being a third kind of object -- and a drone's own colour would break the
+    link the viewer is being asked to see. What the test still forbids is red
+    leaking onto anything that is not part of that engagement.
     """
     colours = palette("light")
     entries = story.keys(colours)
     red = [label for key, label in entries if key.colour == colours.threat]
     amber = [label for key, label in entries if key.colour == colours.watch]
-    assert len(red) == 1
+    assert set(red) == {"Vessel loitering over a cable", "Drone holding station on it"}
     assert len(amber) == 1
-    assert "cable" in amber[0]
+    # Case-insensitive: what matters is that amber is the cable key, not how
+    # the legend capitalises it. The keys read as sentences now and the test
+    # has no business pinning that.
+    assert "cable" in amber[0].lower()
 
 
 def test_the_fleet_is_alone_some_but_not_all_of_the_time(drawing: Replay) -> None:

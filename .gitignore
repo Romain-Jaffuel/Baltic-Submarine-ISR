@@ -12,7 +12,7 @@ out/*
 runs/
 *.pt
 
-# The working tree of the previous project, kept out of version control
+# The working tree of the previous project
 _archive/
 
 # Environment
@@ -31,3 +31,4 @@ htmlcov/
 
 # Working notes
 docs/
+scratchpad/

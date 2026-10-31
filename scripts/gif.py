@@ -31,7 +31,27 @@ BUDGET_BYTES = 4_500_000
 # Start part way in. Both films open with the fleet leaving its bases, which
 # looks much the same either side; the difference is established once a day of
 # simulated traffic has gone by.
-CUTS = ((Path("out/videos/demonstration.mp4"), ASSETS / "demonstration.gif", 12.0, 12.0),)
+#
+# 11.0 s is measured, not chosen. **The film is 30 s for 48 h of simulation,
+# so one second is 1.6 h** -- it keeps one trace frame in four, which is the
+# arithmetic to redo rather than the frame numbers. The twelve seconds from
+# here cover 17.6 h to 36.8 h and hold four separate suspects with no gap
+# between them: a red point is on screen in every second from 11 to 21, and
+# each draws vehicles inside the three kilometres the escort is paid for --
+# four on the first at 20.8 h, two on the second at the same moment, one on
+# the third from 27.2 h and one on the last at 33.6 h.
+#
+# The counts here are inside the PAID radius, not inside hearing. Earlier cuts
+# quoted six and nine drones on a vessel; those were counted at 6 km, which
+# was the old paid radius and is now only the range at which a vehicle can
+# hear. Three kilometres is what the reward asks for and what the eye reads as
+# an escort.
+#
+# An earlier cut began at 12.0 s and caught a dispersal, so the loop in the
+# README showed none of the behaviour it was there to show. Re-derive this
+# after any retraining -- the window moves with the seed and with the policy,
+# and it has moved on every one of them so far.
+CUTS = ((Path("out/videos/demonstration.mp4"), ASSETS / "demonstration.gif", 11.0, 12.0),)
 
 # Tried in order, stopping at the first that fits. Width moves last.
 LADDER = (

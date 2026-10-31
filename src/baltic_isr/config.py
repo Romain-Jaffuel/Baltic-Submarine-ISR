@@ -281,6 +281,135 @@ class Reward(Frozen):
     cable_shaping: float = Field(ge=0.0, default=0.0)
     # Must match the PPO discount or the shaping stops being policy-invariant.
     shaping_discount: float = Field(gt=0.0, lt=1.0, default=0.95)
+    # Holding contact on a vessel the fleet BELIEVES is misbehaving -- the
+    # plausibility model's own verdict, not the ground truth. Everything else
+    # here pays for FINDING things: a verification is a one-off, and an alarm
+    # is paid once at the moment of the catch. Nothing paid for staying, so a
+    # vehicle that found a suspicious vessel wandered off to earn its next
+    # verification, which is the opposite of what the task is named after.
+    #
+    # On the belief rather than the truth, and that is not a softening. Paid on
+    # the truth, the expected value of setting off towards a contact is the
+    # payoff times the chance the contact is really deviating -- measured, 8.3 %
+    # -- so approaching was worth 0.08 a decision against 1.37 for patrolling,
+    # and no weight short of absurd would have fixed it. The fleet cannot be
+    # asked to act on a fact it does not hold. Whether the verdict is right is
+    # the detector's problem, and `false_alarm_rate` and `deviations_missed`
+    # already measure it.
+    #
+    # Nor is it gameable: `plausible` is arithmetic over four sensed quantities
+    # in picture.plausibility, not anything the policy emits. All the policy
+    # chooses is where to be.
+    #
+    # Zero reproduces the reward without it, which is how the two are told
+    # apart.
+    shadow: float = Field(ge=0.0, default=0.0)
+    # How long a verdict stays actionable. The plausibility model judges a
+    # contact when it is heard; this is how stale that judgement may be before
+    # the fleet stops acting on it. Measured against ground truth, the share of
+    # implausible-and-fresh contacts that really are deviating: 8.3 % at a
+    # quarter hour, 7.1 % at a half, 5.3 % at an hour, 2.6 % at three. Sharp
+    # beats generous, because a stale verdict sends vehicles at a vessel that
+    # has long since resumed passage.
+    shadow_memory_s: float = Field(gt=0.0, default=900.0)
+    # How close counts as holding contact. The credit ramps linearly to zero
+    # at this range, so a vehicle is paid to close rather than to loiter at
+    # the rim. Tied to the cruise detection range: past it the vehicle cannot
+    # hear the thing it is shadowing.
+    shadow_radius_m: float = Field(gt=0.0, default=6000.0)
+    # How sharply the credit concentrates on being alongside, as the length
+    # scale of an exponential core that still reaches zero at the radius.
+    #
+    # This replaces a squared ramp, and the reason is measured rather than
+    # aesthetic. `(1 - g/R)^2` has gradient `2(1-g/R)/R`, which is largest at
+    # the vessel and **zero at the rim** -- and the rim is precisely where a
+    # vehicle arrives. The one place it needs to be told "keep coming" was the
+    # one place the term said nothing, so it stopped: median closest approach
+    # 1.47 km inside a 3 km radius, and only 19 % of held encounters ever got
+    # within 500 m.
+    #
+    # Scoring candidate profiles against two recorded trajectories -- the
+    # policy's, and a pure-pursuit override that produces the behaviour wanted
+    # -- no shape wins at a constant payment level: the best manages +0.046 of
+    # fleet reward where training moves 0.39 in 250 updates. The level has to
+    # rise too. At 700 m and weight 16 the profile pays 0.71 at 2 km, which is
+    # BELOW the 0.88 a vehicle earns patrolling cables, and 10.35 at 300 m. So
+    # loitering at the rim stops being a living while being alongside is worth
+    # more than anything else on offer, and pursuit beats the policy by 0.225.
+    # Of every family tried this was the only one whose rim pays less than the
+    # alternative, which is what kills the wide-circle failure by construction.
+    shadow_hug_m: float = Field(gt=0.0, default=700.0)
+    # How many vehicles a suspect is worth. The payout per contact grows with
+    # the number shadowing it until this many are on station and then stops,
+    # while the split keeps falling, so the sixth vehicle to arrive earns less
+    # than it would patrolling and the fleet converges on a team rather than a
+    # mob. Five, because a mob of forty is both wrong operationally and
+    # unreadable on the film.
+    shadow_team: int = Field(gt=0, default=5)
+    # Potential-based shaping toward the suspect, for exactly the reason the
+    # cables needed one. The shadow credit is zero until the vehicle arrives,
+    # and a deviation lasts three hours while cruise covers 13 km in three --
+    # so for anyone further out it is a reward that cannot be reached, and PPO
+    # sees no gradient at all. Measured without it: the fleet flagged a suspect
+    # in 118 of 137 decisions and sent nobody 97.6 % of the time. Shaping makes
+    # the approach pay per decision without moving the optimum.
+    shadow_shaping: float = Field(ge=0.0, default=0.0)
+    # The lookahead the shaping spans. Beyond it the potential is flat, so a
+    # vehicle on the far side of the gulf is not nudged at a suspect it could
+    # not reach before the deviation ends.
+    shadow_reach_m: float = Field(gt=0.0, default=30_000.0)
+    # How slow a watch-listed vessel has to look before the escort is paid for
+    # sitting on it, by the vehicle's OWN believed velocity. The verdict is
+    # permanent, so without this the escort is paid for proximity to anything
+    # ever flagged: measured, 86 of 180 vessels end an episode watch-listed and
+    # 98 % of the credit was being collected beside traffic making 6.0 m/s.
+    # That is a parking space, not an escort, and it is the same failure a
+    # never-expiring flag caused once before.
+    #
+    # It costs nothing to impose. Sweeping the threshold, recall of genuinely
+    # deviating contacts is FLAT at 48.1 % from 3.0 m/s all the way down to
+    # 0.8, while precision goes 0.4 % ungated, 8.9 % at 3.0, 53.9 % at 1.5 and
+    # 78.1 % at 1.0 -- two hundred times the precision for no recall at all.
+    # A drone cruises at 1.2 m/s, so a faster vessel is one it could not hold
+    # station on anyway.
+    shadow_slow_ms: float = Field(gt=0.0, default=1.0)
+    # What it costs to stand inside a suspect's radius escorting nothing.
+    #
+    # The team cap is exact -- five claims a vessel, never six -- and the crowd
+    # on the film was still eleven at the ninetieth percentile. The cap stops
+    # the sixth vehicle being PAID; it does not stop it waiting. A claimed slot
+    # earns 4.29 a decision against 0.84 on patrol, slots fall vacant, and 31 %
+    # of waits end in one, so queueing beside a full vessel has option value
+    # even though the wait itself pays nothing: measured on recorded
+    # trajectories, the discounted edge of queueing over going back on patrol
+    # is +1.66.
+    #
+    # Lowering `shadow` is the obvious answer and it is the wrong one. The
+    # prize is multiplied by a held spell of 135 minutes while the wait is only
+    # four or five decisions, so the weight has to fall far enough to loosen
+    # the hug before the queue stops paying -- trading the behaviour that was
+    # asked for against a side effect of it. Charging for the wait touches only
+    # the vehicles escorting nothing.
+    #
+    # Priced the same way the escort weight was, over two recorded seeds: the
+    # edge turns negative at 0.35 a decision, identically on both. 1.0 is a
+    # threefold margin on a quantity measured from one policy, it lands on
+    # 4.4 % of deployed vehicle-decisions, and it is a tenth of the 10.35 that
+    # being alongside pays -- too small to reach the escort it protects.
+    shadow_crowding: float = Field(ge=0.0, default=0.0)
+    # Packing: a charge for standing in a crowd, whoever the crowd is around.
+    # `shadow_crowding` only ever fires beside a suspect and only on a vehicle
+    # with no claim, so it says nothing about a knot of hulls on patrol. These
+    # three say that a pile is bad in itself.
+    #
+    # The radius is the load-bearing choice and it is set by the modem, not by
+    # the escort: the acoustic link reaches 6 km, so charging proximity below
+    # 3 km can never cost the fleet a relay. Two vehicles 3.1 km apart pay
+    # nothing and still talk. Being able to hear each other is worth paying
+    # for; being in the same water is not.
+    packing_weight: float = Field(ge=0.0, default=0.0)
+    packing_radius_m: float = Field(gt=0.0, default=3000.0)
+    packing_allowance: int = Field(ge=0, default=5)
 
 
 class Fleet(Frozen):

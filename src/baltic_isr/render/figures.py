@@ -381,13 +381,26 @@ def detection_range_against_speed(
     marks: dict[str, float],
     path: Path | None = None,
     mode: str = "light",
+    cavitation_ms: float | None = None,
 ) -> Path:
-    """Draw two panels on one speed axis: what hurrying costs a drone."""
+    """Draw two panels on one speed axis: what hurrying costs a drone.
+
+    The range curve has a step in it, and the step is the point rather than a
+    defect: thruster cavitation switches on at a threshold speed and adds its
+    penalty at once, so a drone loses several hundred metres of hearing for
+    the last fraction of a knot. The subtitle says so and the plot stays
+    empty of prose -- a chart that needs a paragraph inside it is a chart that
+    has not been drawn properly.
+    """
     colours = palette(mode)
     figure = _page(
         "Detection range and power draw, against speed",
         "Passive sonar against a cargo contact, baseline scenario. Markers at the three "
-        "operating regimes.",
+        + (
+            f"operating regimes; the step at {cavitation_ms:.1f} m/s is thruster cavitation."
+            if cavitation_ms is not None
+            else "operating regimes."
+        ),
         colours,
     )
     left = figure.add_axes((0.065, 0.16, 0.38, 0.60))
@@ -403,27 +416,58 @@ def detection_range_against_speed(
         axes.plot(speeds, values, color=colours.regime[1], linewidth=2.0)
         axes.set_xlabel("Speed through the water, m/s", color=colours.ink_soft, fontsize=9)
         axes.set_title(label, color=colours.ink, fontsize=10, loc="left", pad=8)
+        # The speed axis stops where the vehicle does. Padding it to make
+        # room for a label put negative speeds on a public figure, which is a
+        # worse fault than a cramped label: the labels are arranged to fit
+        # this axis instead.
+        axes.set_xlim(float(speeds[0]), float(speeds[-1]))
+        axes.margins(y=0.16)
 
-    # Each label is pushed away from whichever edge it is near, so none of
-    # them lands on a panel title or runs off the plot.
     for name, speed in marks.items():
         for axes, values in ((left, hearing_km), (right, draw_w)):
             value = float(np.interp(speed, speeds, values))
-            axes.plot([speed], [value], "o", color=colours.regime[2], markersize=6, zorder=5)
+            axes.plot(
+                [speed],
+                [value],
+                "o",
+                color=colours.regime[2],
+                markersize=6,
+                zorder=5,
+                clip_on=False,
+            )
+            # Beside the marker and level with it, on one line. Stacking the
+            # number under the name and hanging the pair off a corner put the
+            # middle label straight through the curve in both panels.
+            #
+            # Which side is picked so that no label ever crosses the line.
+            # The mark at the top speed reads backwards along the axis, into
+            # the space the fall has already left behind it. The one at rest
+            # has the frame on one side and a flat curve on the other, so it
+            # is the single label that steps off the line, away from the
+            # curve, which is above it in one panel and below it in the other.
+            #
+            # They are placed to clear the curve rather than painted over it.
+            # A patch of page behind the text hid the line underneath, which
+            # is worse than a collision: the reader sees a gap in the data
+            # and has no way to know it is only a label.
             low, high = axes.get_ylim()
-            near_top = value > low + 0.80 * (high - low)
-            near_right = speed > speeds[-1] * 0.80
+            at_rest = speed <= speeds[0]
+            at_top = speed >= speeds[-1]
+            under_curve = value > low + 0.5 * (high - low)
             axes.annotate(
-                f"{name.capitalize()}\n{_number(value)}",
+                f"{name.capitalize()}  {_number(value)}",
                 xy=(speed, value),
-                xytext=(-8 if near_right else 8, -22 if near_top else 10),
+                xytext=(
+                    -11 if at_top else 11,
+                    (-13 if under_curve else 13) if at_rest else 0,
+                ),
                 textcoords="offset points",
                 color=colours.ink,
                 fontsize=8.5,
-                linespacing=1.35,
-                ha="right" if near_right else "left",
-                va="top" if near_top else "bottom",
+                ha="right" if at_top else "left",
+                va="center",
             )
+
     return _save(figure, colours, "detection-range-against-speed.png", path)
 
 
@@ -550,8 +594,8 @@ def drawn_against_surveyed(
     width, height = float(extent[0]), float(extent[1])
     figure = _page(
         "Drawn coastline against surveyed coastline",
-        "Five-vertex polylines over the EMODnet terrain model, with the Tallinn base "
-        f"position under each. The two base positions lie {moved:.1f} km apart.",
+        "Five-vertex polylines over the EMODnet terrain model, with the Tallinn quay as "
+        f"each places it. The drawn coast puts it {moved:.1f} km from navigable water.",
         colours,
         size=(11.0, 11.0 * height / width * 0.93 + 1.1),
     )
@@ -590,7 +634,7 @@ def drawn_against_surveyed(
     axes.plot([base_then[0]], [base_then[1]], "o", color=colours.threat, markersize=7, zorder=7)
     axes.plot([base_now[0]], [base_now[1]], "o", color=colours.ink, markersize=7, zorder=7)
     axes.annotate(
-        f"Tallinn base, {moved:.1f} km apart",
+        f"Tallinn quay, {moved:.1f} km apart",
         xy=(float(base_then[0]), float(base_then[1])),
         xytext=(14, -18),
         textcoords="offset points",

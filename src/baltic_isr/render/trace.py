@@ -48,6 +48,7 @@ class Trace:
     vehicle_energy: list[np.ndarray] = field(default_factory=list)
     vehicle_mode: list[np.ndarray] = field(default_factory=list)
     vehicle_reach_m: list[np.ndarray] = field(default_factory=list)
+    vehicle_claim: list[np.ndarray] = field(default_factory=list)
     vessel_xy: list[np.ndarray] = field(default_factory=list)
     vessel_deviating: list[np.ndarray] = field(default_factory=list)
     track_xy: list[np.ndarray] = field(default_factory=list)
@@ -79,6 +80,7 @@ class Trace:
             "vehicle_energy",
             "vehicle_mode",
             "vehicle_reach_m",
+            "vehicle_claim",
             "vessel_xy",
             "vessel_deviating",
             "track_xy",
@@ -180,6 +182,14 @@ class Recorder:
         trace.vehicle_reach_m.append(
             self._reach[fleet.regime[index].cpu()].numpy().astype(np.float32)
         )
+        # WHO the escort is, not who happens to be nearby. The film used to
+        # re-derive "within the escort radius" from geometry, which marks every
+        # vehicle in the water around a suspect -- the five that were tasked and
+        # the ones queueing or crossing alike. That is the picture the viewer
+        # complained about. The assignment is a fact of the run, so it is
+        # recorded rather than guessed at draw time, and the highlight and the
+        # payment cannot disagree.
+        trace.vehicle_claim.append(_numpy(state.escort_claim[index], np.int16))
         trace.vessel_xy.append(_numpy(traffic.xy[index]))
         trace.vessel_deviating.append(_numpy(traffic.deviating[index], np.bool_))
         if trace.vessel_class is None:

@@ -17,7 +17,7 @@ import torch
 
 from baltic_isr import config
 from baltic_isr.learn import ppo, train
-from baltic_isr.learn.env import Environment
+from baltic_isr.learn.env import OBSERVATION, Environment
 
 WORLDS = 128
 UPDATES = 150
@@ -30,8 +30,8 @@ if __name__ == "__main__":
     settings = ppo.Settings(rollout=32)
     width = Environment(resolved, 1, device, sees="oracle").observation_width
 
-    print(f"oracle sur {device}, {WORLDS} worlds, {UPDATES} mises a jour")
-    print(f"  observation {width} contre 213 pour le decentralise")
+    print(f"oracle on {device}, {WORLDS} worlds, {UPDATES} updates")
+    print(f"  observation {width} against {OBSERVATION} for the decentralised one")
     started = time.perf_counter()
     policy, log = train.train(
         resolved,
@@ -42,10 +42,10 @@ if __name__ == "__main__":
         log_every=10,
         sees="oracle",
     )
-    print(f"\nentraine en {(time.perf_counter() - started) / 60:.1f} min")
+    print(f"\ntrained in {(time.perf_counter() - started) / 60:.1f} min")
     print(f"  wrote {train.save(policy, log, name='oracle')}")
 
-    print("\nevaluation sur des seeds jamais vues, politique gloutonne\n")
+    print("\nevaluated on unseen seeds, acting greedily\n")
     reports = train.compare(resolved, policy, device=device, sees="oracle")
     print(train.table(reports))
 

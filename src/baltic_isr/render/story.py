@@ -49,6 +49,9 @@ FPS = 24
 # hairlines, and the size every site expects of a hero video.
 CANVAS = (19.2, 10.8)
 DPI = 100
+# How wide the magnifier's window is. 24 km puts the 3 km escort circle at a
+# quarter of the frame, which is the smallest magnification that lets a viewer
+# count the drones inside it and see that they are not moving.
 
 # How much of the map's height the single-panel film keeps. The gulf is 138 km
 # by 110, but the top and bottom fifths are land, and a full-width map of it
@@ -89,8 +92,14 @@ def keys(colours: Palette) -> tuple[tuple[Key, str], ...]:
         (Key("", "dot", colours.ink_soft, size=55.0, marker="s"), "Shore base"),
         (Key("", "line", colours.lane, extra={"linewidth": 7.0}), "Shipping lane"),
         (Key("", "dot", colours.traffic, size=95.0, marker=SHIP), "Merchant vessel"),
-        (Key("", "dot", colours.threat, size=190.0, marker=SHIP), "Suspicious vessel"),
+        # "Loitering over a cable", not "suspicious": that is the predicate the
+        # mark now carries and the one the escort is paid on. A vessel idling
+        # in open water is odd and is not a target, and calling the mark
+        # "suspicious" invited the film to be read as missing seven targets it
+        # was never given.
+        (Key("", "dot", colours.threat, size=190.0, marker=SHIP), "Vessel loitering over a cable"),
         (Key("", "dot", colours.regime[1], size=150.0, marker=AUV), "Submarine drone"),
+        (Key("", "disc", colours.threat, size=300.0), "Drone holding station on it"),
         (Key("", "disc", colours.regime[0], size=460.0), "Sonar detection range"),
     )
 
@@ -407,17 +416,30 @@ def demonstration(
     band = _header(
         figure,
         colours,
-        "40 submarine drones guarding the subsea cables of the Gulf of Finland",
+        f"{after.vehicles} submarine drones guarding the subsea cables "
+        "of the Gulf of Finland",
     )
     left = figure.add_axes((0.012, 0.140, 0.480, 0.745))
     right = figure.add_axes((0.508, 0.140, 0.480, 0.745))
+    # No magnifier. There used to be an inset over the land in each panel,
+    # pointed at the escort, because three kilometres is twenty pixels on a
+    # gulf 137 km across and the escort was invisible without it. It was
+    # removed on the viewer's judgement: a picture-in-picture asks the eye to
+    # hold two scales and two clocks at once, and what it bought was legibility
+    # of one event at the cost of the map being a map.
+    #
+    # What makes it affordable to drop is the deviation rate. At 24 loiterers
+    # an episode the map was too busy for a halo to find; at 6 -- the credible
+    # figure, see config/world.yaml -- there are few enough red marks that the
+    # escort reads at full scale. Simplify the scene, not the explanation.
     for drawing in (before, after):
         drawing.show_legend = False
         drawing.style = "exposition"
 
     frames = min(before.frames, after.frames)
+    wanted = list(range(0, frames, every))
     writer = _encode(destination, FPS)
-    for frame in range(0, frames, every):
+    for frame in wanted:
         ticking = _clock(band, after, frame, colours)
         for axes, drawing, title in (
             (left, before, "Before training"),

@@ -42,7 +42,13 @@ def hearing_and_endurance(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
     """Return detection range and power, swept over speed."""
     cargo = next(item for item in resolved.traffic.classes if item.name == "cargo")
-    speeds = np.linspace(0.0, resolved.auv.max_speed_ms, 60)
+    # The grid straddles the cavitation onset instead of stepping over it. A
+    # linspace lands either side of 2.0 m/s without ever sampling next to it,
+    # which draws the step as a gentle slope and makes its size unreadable.
+    onset = resolved.acoustics.machinery_onset_ms
+    speeds = np.unique(
+        np.concatenate([np.linspace(0.0, resolved.auv.max_speed_ms, 60), [onset - 1e-4, onset]])
+    )
     hearing = [
         acoustics.detection_range_m(
             float(speed), cargo.source_level_db, resolved.acoustics, resolved.environment
@@ -52,7 +58,10 @@ def hearing_and_endurance(
     ]
     draw = [power.power_w(float(speed), resolved.auv) for speed in speeds]
     marks = power.regime_speeds(resolved.auv)
-    return speeds, np.array(hearing), np.array(draw), marks
+    # The speed at which thruster cavitation switches on. The range curve has
+    # a step in it there, and the figure says so rather than leaving a reader
+    # to wonder whether the solver misbehaved.
+    return speeds, np.array(hearing), np.array(draw), marks, onset
 
 
 def loneliness(resolved: Config, trace: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
@@ -125,6 +134,15 @@ DRAWN_COAST = {
 }
 DRAWN_BASE = (24.75, 59.44)
 
+# Where the survey put that same quay: the nearest water that is deep enough,
+# clear of the shore and part of the open gulf. Written down rather than read
+# from the configuration, because the configuration has since moved the fleet
+# off the quays altogether and onto Isosaari and Naissaar. That was a choice
+# about where to moor; THIS is what the drawn coastline got wrong, and the
+# figure is about the second thing. Reading today's mooring here drew a 17 km
+# line and attributed a scenario decision to a measurement error.
+SURVEYED_BASE = (24.7517, 59.4533)
+
 
 def coastlines(
     resolved: Config,
@@ -139,7 +157,7 @@ def coastlines(
     }
     surveyed = seabed_module.load().coast
     base_then = np.asarray(frame.to_xy(*DRAWN_BASE)) - origin
-    base_now = fixed.bases.numpy()[1]
+    base_now = np.asarray(frame.to_xy(*SURVEYED_BASE)) - origin
     return drawn, surveyed, base_then, base_now, fixed.extent.numpy()
 
 
@@ -172,9 +190,12 @@ if __name__ == "__main__":
     torch.set_grad_enabled(False)
 
     ASSETS.mkdir(parents=True, exist_ok=True)
+    HEARING = hearing_and_endurance(resolved)
     written = [
         figures.detection_range_against_speed(
-            *hearing_and_endurance(resolved), path=ASSETS / "detection-range-against-speed.png"
+            *HEARING[:4],
+            path=ASSETS / "detection-range-against-speed.png",
+            cavitation_ms=HEARING[4],
         ),
         figures.distance_to_nearest_drone(
             *loneliness(resolved, after), path=ASSETS / "distance-to-nearest-drone.png"
