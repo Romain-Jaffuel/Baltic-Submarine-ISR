@@ -250,8 +250,18 @@ def test_has_clearance_asks_the_seabed_rather_than_the_shore(statics: Statics) -
     # distance field, so a bare `.all()` here fails with nothing to go on when
     # they disagree. It says which points and by how much.
     at_sea = field.is_sea(statics, points)
-    stray = deep_enough & ~at_sea
+    # Beyond one cell inland. Both fields are bilinear reads of a step at the
+    # waterline, and they do not cross it at the same millimetre: one point in
+    # this grid sits 31 m inland and reads exactly 15.00 m of depth, so whether
+    # it clears the threshold comes down to the last bit of an interpolation,
+    # which is not the same arithmetic on every platform. Inside that cell the
+    # question has no answer. Outside it, the two must agree.
+    inland = field.distance_to_coast(statics, points) <= -statics.seabed_cell_m
+    stray = deep_enough & ~at_sea & inland
     assert not bool(stray.any()), _disagreement(statics, points, stray)
+    # And the excused band stays a sliver rather than a coastline the test has
+    # quietly given up on.
+    assert int((deep_enough & ~at_sea).sum()) <= deep_enough.numel() // 1000
     assert int(at_sea.sum()) > int(deep_enough.sum())
 
 
