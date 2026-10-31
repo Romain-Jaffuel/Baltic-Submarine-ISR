@@ -1654,7 +1654,8 @@ class Environment:
         neighbours = near.sum(dim=-1) - deployed.long()
         surplus = (neighbours - settings.packing_allowance).clamp_min(0)
         unengaged = (claim.long() < 0) & deployed
-        return settings.packing_weight * surplus.to(gap.dtype) * unengaged.to(gap.dtype)
+        charge: torch.Tensor = surplus.to(gap.dtype) * unengaged.to(gap.dtype)
+        return settings.packing_weight * charge
 
     def _crowding(
         self,
@@ -1696,7 +1697,8 @@ class Environment:
         deployed = (fleet.mode == auv_module.MODE_DEPLOYED).unsqueeze(-1)
         on_it = suspected & (gap < settings.shadow_radius_m) & deployed
         loitering = on_it.any(dim=-1) & (claim.long() < 0)
-        return settings.shadow_crowding * loitering.to(gap.dtype)
+        waiting: torch.Tensor = loitering.to(gap.dtype)
+        return settings.shadow_crowding * waiting
 
     def _nearest_tracks(self, state: EnvState) -> torch.Tensor:
         """Return the handful of held contacts each vehicle should care about."""

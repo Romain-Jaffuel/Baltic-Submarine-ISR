@@ -416,8 +416,7 @@ def demonstration(
     band = _header(
         figure,
         colours,
-        f"{after.vehicles} submarine drones guarding the subsea cables "
-        "of the Gulf of Finland",
+        f"{after.vehicles} submarine drones guarding the subsea cables of the Gulf of Finland",
     )
     left = figure.add_axes((0.012, 0.140, 0.480, 0.745))
     right = figure.add_axes((0.508, 0.140, 0.480, 0.745))

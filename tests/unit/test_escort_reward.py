@@ -25,9 +25,10 @@ import pytest
 import torch
 
 from baltic_isr import config
-from baltic_isr.config import Config
+from baltic_isr.config import Config, Reward
 from baltic_isr.fleet import auv as auv_module
-from baltic_isr.learn.env import Environment
+from baltic_isr.learn.env import Environment, EnvState
+from baltic_isr.picture.tracks import Tracks
 
 
 @pytest.fixture(scope="module")
@@ -35,7 +36,7 @@ def resolved() -> Config:
     return config.load("baseline")
 
 
-def _flag(state, vessel_index: int):
+def _flag(state: EnvState, vessel_index: int) -> Tracks:
     """Return tracks where every vehicle holds an actionable verdict on one vessel.
 
     `_suspected` is a conjunction -- flagged, held, believed slow, not stale --
@@ -53,11 +54,11 @@ def _flag(state, vessel_index: int):
     )
 
 
-def pays(settings, gap_m: float) -> float:
+def pays(settings: Reward, gap_m: float) -> float:
     """Return what the escort pays a lone vehicle at this range, from the config."""
     floor = math.exp(-settings.shadow_radius_m / settings.shadow_hug_m)
     core = (math.exp(-gap_m / settings.shadow_hug_m) - floor) / (1.0 - floor)
-    return settings.shadow * max(core, 0.0)
+    return float(settings.shadow) * max(core, 0.0)
 
 
 def test_the_escort_pays_nothing_at_the_rim(resolved: Config) -> None:
@@ -223,8 +224,7 @@ def test_the_cap_is_a_held_claim_and_not_a_fresh_ranking(resolved: Config) -> No
     assert torch.equal(claim, again), "the claim churns between calls"
 
     # And the attraction pulls the claimants only, so shaping and credit agree.
-    pulled = env._suspect_potential(replace(state, fleet=fleet, tracks=tracks,
-                                            escort_claim=claim))
+    pulled = env._suspect_potential(replace(state, fleet=fleet, tracks=tracks, escort_claim=claim))
     assert int((pulled[0] > 0.0).sum()) == team
 
 
@@ -415,9 +415,7 @@ def test_a_slot_survives_the_transit_it_was_granted_for(resolved: Config) -> Non
 
     # And the attraction follows the claim, so the five being pulled are the
     # five that were tasked rather than the five that happen to be closest.
-    pulled = env._suspect_potential(
-        replace(state, fleet=fleet, tracks=tracks, escort_claim=kept)
-    )
+    pulled = env._suspect_potential(replace(state, fleet=fleet, tracks=tracks, escort_claim=kept))
     assert int((pulled[0] > 0.0).sum()) == team
     assert bool((pulled[0, :team] > 0.0).all()), "the inbound five are not being pulled"
 
